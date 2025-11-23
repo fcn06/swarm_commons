@@ -4,6 +4,7 @@ resolver = "3"
 # Used while refactoring to add agent_protocol_backbone
 members = [ 
                 "agent_core",
+                "agent_models",
                 "llm_api",
                 "configuration",]
 
@@ -14,7 +15,7 @@ rmcp= { git = "https://github.com/modelcontextprotocol/rust-sdk.git", features =
 a2a-rs= { git = "https://github.com/EmilLindfors/a2a-rs.git" , features=["server","http-server","client","http-client","tracing"] , rev="2cf954129de8b4cc3b3146780877e508fa34c00c" }
 
 
-agent_models={git = "https://github.com/fcn06/swarm.git"}
+#agent_models={git = "https://github.com/fcn06/swarm.git"}
 
 #resource_invoker={git = "https://github.com/fcn06/swarm.git"}
 #agent_factory={git = "https://github.com/fcn06/swarm.git"}
@@ -27,7 +28,7 @@ agent_models={git = "https://github.com/fcn06/swarm.git"}
 llm_api = { path = "./llm_api" }
 agent_core = { path = "./agent_core" }
 configuration = { path = "./configuration" }
-
+agent_models = { path = "./agent_models" }
 
 reqwest = { version = "0.12", features = ["json","rustls-tls"] }
 rustls="0.23"

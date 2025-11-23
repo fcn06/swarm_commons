@@ -52,7 +52,6 @@ dependencies = [
 [[package]]
 name = "agent_models"
 version = "0.1.0"
-source = "git+https://github.com/fcn06/swarm.git#ae4b4598d369f66b8b59db90216f47a18bd702e0"
 dependencies = [
  "anyhow",
  "serde",
