@@ -78,15 +78,18 @@ impl<T:Agent> AgentServer<T> {
 
         let message_handler = AgentHandler::<T>::with_storage(self.agent.clone(),storage.clone());
 
-        let processor = DefaultRequestProcessor::new(
-            message_handler,
-            storage.clone(),
-            storage,
-        );
-
         let agent_http_endpoint= format!("{}", self.config.agent_http_endpoint());
         let _agent_ws_endpoint= format!("{}", self.config.agent_ws_endpoint());
 
+        // We should remove that part
+        let simple_agent_info = SimpleAgentInfo::new(
+            self.config.agent_name(),
+            agent_http_endpoint.clone(),
+        );
+
+        let processor = DefaultRequestProcessor::with_handler(message_handler, simple_agent_info);
+
+        
         let agent_info = SimpleAgentInfo::new(
             self.config.agent_name(),
             agent_http_endpoint.clone(),
@@ -103,6 +106,7 @@ impl<T:Agent> AgentServer<T> {
             Some(vec!["text".to_string(), "data".to_string()]),
             Some(vec!["text".to_string(), "data".to_string()]),
         );
+
 
         let agent_definition=AgentDefinition{
             id:Uuid::new_v4().to_string(),
