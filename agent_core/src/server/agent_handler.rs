@@ -6,6 +6,8 @@
 //! For production agents, you typically want to implement your own message handler
 //! and compose it with the storage implementations directly.
 
+// Example : https://github.com/EmilLindfors/a2a-rs/blob/master/a2a-rs/examples/http_client_server.rs
+
 use std::sync::{Arc};
 use tokio::sync::Mutex;
 
@@ -282,8 +284,8 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
     ) -> Result<(), A2AError> {
         // to avoid this error in http client
         // https://github.com/EmilLindfors/a2a-rs/blob/b2d8dbf9ef0c4e5a317b63e1bbb2e092d61c0e04/a2a-rs/src/adapter/storage/task_storage.rs#L28
-        //self.storage.broadcast_status_update(task_id, update).await
-        Ok(())
+        self.storage.broadcast_status_update(task_id, update).await
+        //Ok(())
     }
 
     async fn broadcast_artifact_update<'a>(
@@ -291,8 +293,8 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
         task_id: &'a str,
         update: TaskArtifactUpdateEvent,
     ) -> Result<(), A2AError> {
-        //self.storage.broadcast_artifact_update(task_id, update).await
-        Ok(())
+        self.storage.broadcast_artifact_update(task_id, update).await
+        //Ok(())
     }
 
     async fn status_update_stream<'a>(

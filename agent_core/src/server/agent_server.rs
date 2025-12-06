@@ -107,7 +107,7 @@ impl<T:Agent> AgentServer<T> {
             Some(vec!["text".to_string(), "data".to_string()]),
         );
 
-
+        
         let agent_definition=AgentDefinition{
             id:Uuid::new_v4().to_string(),
             name:self.config.agent_name(),

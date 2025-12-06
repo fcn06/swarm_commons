@@ -371,7 +371,7 @@ impl AgentReference {
 // SETUP LOGGING LEVEL
 ///////////////////////////////////////////////////////////////
 
-pub fn setup_logging(log_level: &str) {
+pub fn setup_logging_old(log_level: &str) {
 
     let default_filter = log_level.to_string(); // Use the provided log_level as the default
 
@@ -387,3 +387,22 @@ pub fn setup_logging(log_level: &str) {
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 }
+
+pub fn setup_logging(log_level: &str) {
+
+    let default_filter = log_level.to_string(); // Use the provided log_level as the default
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_filter))
+        .add_directive("a2a_rs::adapter::storage::task_storage=error".parse().unwrap());
+
+    let subscriber = Registry::default().with(
+        fmt::layer()
+            .compact()
+            .with_ansi(true)
+            .with_filter(env_filter),
+    );
+
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+}
+
