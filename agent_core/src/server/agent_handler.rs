@@ -12,10 +12,12 @@ use tokio::sync::Mutex;
 use async_trait::async_trait;
 
 use a2a_rs::{
+    ListTasksResult,
     adapter::storage::InMemoryTaskStorage,
     domain::{
         A2AError, Message, Part as MessagePart, Task, TaskArtifactUpdateEvent,
         TaskPushNotificationConfig, TaskState, TaskStatusUpdateEvent,
+        ListTasksParams,
     },
     port::{
         AsyncMessageHandler, AsyncNotificationManager, AsyncStreamingHandler, AsyncTaskManager,
@@ -204,6 +206,16 @@ impl<T: Agent> AsyncTaskManager for AgentHandler<T> {
     async fn task_exists<'a>(&self, task_id: &'a str) -> Result<bool, A2AError> {
         self.storage.task_exists(task_id).await
     }
+
+    async fn list_tasks_v3<'a>(
+        &self,
+        params: &'a ListTasksParams, 
+    ) -> Result<ListTasksResult, A2AError> {
+        self.storage.list_tasks_v3(params).await
+    }
+
+
+
 }
 
 #[async_trait]
