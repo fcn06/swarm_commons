@@ -5,6 +5,7 @@ use std::fs; // Assuming you might want logging here too
 use tracing_subscriber::{prelude::*, fmt, layer::Layer, Registry};
 use tracing_subscriber::EnvFilter;
 
+
 //////////////////////////////////////////////////////////////////////
 // CONFIG FOR MCP
 //////////////////////////////////////////////////////////////////////
@@ -390,6 +391,15 @@ pub fn setup_logging_old(log_level: &str) {
 
 pub fn setup_logging(log_level: &str) {
 
+    /************************************************/
+    /* Setting proper log level. Default is WARN    */
+    /************************************************/ 
+    /* We are not using the default setup_logging as */
+    /* we want to silence this specific warning     */
+    /* WARN a2a_rs::adapter::storage::task_storage: */
+    /* ⚠️  No WebSocket subscribers found for task  */
+    /************************************************/
+     
     let default_filter = log_level.to_string(); // Use the provided log_level as the default
 
     let env_filter = EnvFilter::try_from_default_env()
@@ -404,5 +414,6 @@ pub fn setup_logging(log_level: &str) {
     );
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
+    
 }
 
