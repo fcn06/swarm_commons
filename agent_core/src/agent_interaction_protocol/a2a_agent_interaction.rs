@@ -76,6 +76,10 @@ impl AgentInteraction for A2AAgentInteraction {
         let max_retries = 3; // You can adjust this
         let mut delay = Duration::from_secs(1); // Starting delay
 
+        // Since A2A v0.3, THIS IS CAUSING WARNING
+        // WARN a2a_rs::adapter::storage::task_storage: ⚠️  No WebSocket subscribers found for task task_id=task-001dac70-baf9-4665-89a2-a35e3f0c9aca
+        // https://github.com/EmilLindfors/a2a-rs/blob/b2d8dbf9ef0c4e5a317b63e1bbb2e092d61c0e04/a2a-rs/tests/integration_test.rs
+
         let task = loop {
             info!("Sending message to task...");
             match self
