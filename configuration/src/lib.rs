@@ -1,10 +1,8 @@
-
 use serde::{Serialize,Deserialize};
 use std::fs; // Assuming you might want logging here too
 
 use tracing_subscriber::{prelude::*, fmt, layer::Layer, Registry};
 use tracing_subscriber::EnvFilter;
-
 
 //////////////////////////////////////////////////////////////////////
 // CONFIG FOR MCP
@@ -52,10 +50,6 @@ pub struct AgentConfig {
     pub agent_name: String,
     pub agent_http_endpoint: String,
     pub agent_ws_endpoint: String,
-    //pub agent_host: String,
-    //pub agent_http_port: String,
-    //pub agent_ws_port: String,
-    //pub agent_discovery_url: Option<String>, // to remove from config and make it runtime
     pub agent_discoverable: Option<bool>,
     pub agent_executor_url: Option<String>, // todo: to remove from config and make it runtime
     pub agent_system_prompt: Option<String>,
@@ -71,17 +65,13 @@ pub struct AgentConfig {
     pub agent_tags: Vec<String>,
     pub agent_examples: Vec<String>,
     pub agent_agents_references: Option<Vec<AgentReference>>,
-    //pub agent_evaluation_service_url: Option<String>, // to remove from config and make it runtime
-    //pub agent_memory_service_url: Option<String>, // to remove from config and make it runtime
 }
 
 impl AgentConfig {
     /// Loads agent configuration from a TOML file.
     pub fn load_agent_config(path: &str) -> anyhow::Result<AgentConfig> {
-        //info!("Loading agent configuration from: {}", path);
         let config_content = fs::read_to_string(path)?;
         let config: AgentConfig = toml::from_str(&config_content)?;
-        //debug!("Loaded agent configuration: {:?}", config);
         Ok(config)
     }
 
@@ -93,10 +83,6 @@ impl AgentConfig {
     pub fn agent_name(&self) -> String { self.agent_name.clone() }
     pub fn agent_http_endpoint(&self) -> String { self.agent_http_endpoint.clone() }
     pub fn agent_ws_endpoint(&self) -> String { self.agent_ws_endpoint.clone() }
-    //pub fn agent_host(&self) -> String { self.agent_host.clone() }
-    //pub fn agent_http_port(&self) -> u16 { self.agent_http_port.parse().unwrap_or_default() }
-    //pub fn agent_ws_port(&self) -> u16 { self.agent_ws_port.parse().unwrap_or_default() }
-    //pub fn agent_discovery_url(&self) -> Option<String> { self.agent_discovery_url.clone() }
     pub fn agent_discoverable(&self) -> Option<bool> { self.agent_discoverable.or(Some(false)) } // false by defaul except when explicitly set to true
     pub fn agent_executor_url(&self) -> Option<String> { self.agent_executor_url.clone() }
     pub fn agent_system_prompt(&self) -> Option<String> { self.agent_system_prompt.clone() }
@@ -112,9 +98,6 @@ impl AgentConfig {
     pub fn agent_tags(&self) -> Vec<String> { self.agent_tags.clone() }
     pub fn agent_examples(&self) -> Vec<String> { self.agent_examples.clone() }
     pub fn agent_agents_references(&self) -> Option<Vec<AgentReference>> { self.agent_agents_references.clone() }
-    //pub fn agent_evaluation_service_url(&self) -> Option<String> { self.agent_evaluation_service_url.clone() }
-    //pub fn agent_memory_service_url(&self) -> Option<String> { self.agent_memory_service_url.clone() }
-
 }
 
 pub struct AgentConfigBuilder {
@@ -122,10 +105,6 @@ pub struct AgentConfigBuilder {
     pub agent_name: Option<String>,
     pub agent_http_endpoint: Option<String>,
     pub agent_ws_endpoint: Option<String>,
-    //pub agent_host: Option<String>,
-    //pub agent_http_port: Option<String>,
-    //pub agent_ws_port: Option<String>,
-    //pub agent_discovery_url: Option<String>,
     pub agent_discoverable: Option<bool>,
     pub agent_executor_url: Option<String>,
     pub agent_system_prompt: Option<String>,
@@ -141,8 +120,6 @@ pub struct AgentConfigBuilder {
     pub agent_tags: Option<Vec<String>>,
     pub agent_examples: Option<Vec<String>>,
     pub agent_agents_references: Option<Vec<AgentReference>>,
-    //pub agent_evaluation_service_url: Option<String>,
-    //pub agent_memory_service_url: Option<String>,
 }
 
 impl AgentConfigBuilder {
@@ -152,10 +129,6 @@ impl AgentConfigBuilder {
             agent_name: None,
             agent_http_endpoint: None,
             agent_ws_endpoint: None,
-            //agent_host: None,
-            //agent_http_port: None,
-            //agent_ws_port: None,
-            //agent_discovery_url: None,
             agent_discoverable: None,
             agent_executor_url: None,
             agent_system_prompt: None,
@@ -171,8 +144,6 @@ impl AgentConfigBuilder {
             agent_tags: None,
             agent_examples: None,
             agent_agents_references: None,
-            //agent_evaluation_service_url: None,
-            //agent_memory_service_url: None,
         }
     }
 
@@ -196,29 +167,7 @@ impl AgentConfigBuilder {
         self
     }
 
-    /* 
-
-    pub fn agent_host(mut self, agent_host: String) -> Self {
-        self.agent_host = Some(agent_host);
-        self
-    }
-
-    pub fn agent_http_port(mut self, agent_http_port: String) -> Self {
-        self.agent_http_port = Some(agent_http_port);
-        self
-    }
-
-    pub fn agent_ws_port(mut self, agent_ws_port: String) -> Self {
-        self.agent_ws_port = Some(agent_ws_port);
-        self
-    }
-
-    pub fn agent_discovery_url(mut self, agent_discovery_url: String) -> Self {
-        self.agent_discovery_url = Some(agent_discovery_url);
-        self
-    }
-    */
-
+   
     pub fn agent_discoverable(mut self, agent_discoverable: bool) -> Self {
         self.agent_discoverable = Some(agent_discoverable);
         self
@@ -294,17 +243,6 @@ impl AgentConfigBuilder {
         self
     }
 
-    /* 
-    pub fn agent_evaluation_service_url(mut self, agent_evaluation_service_url: String) -> Self {
-        self.agent_evaluation_service_url = Some(agent_evaluation_service_url);
-        self
-    }
-
-    pub fn agent_memory_service_url(mut self, agent_memory_service_url: String) -> Self {
-        self.agent_memory_service_url = Some(agent_memory_service_url);
-        self
-    }
-    */
 
     pub fn build(self) -> anyhow::Result<AgentConfig> {
         Ok(AgentConfig {
@@ -312,10 +250,6 @@ impl AgentConfigBuilder {
             agent_name: self.agent_name.ok_or_else(|| anyhow::anyhow!("agent_name is required"))?,
             agent_http_endpoint: self.agent_http_endpoint.ok_or_else(|| anyhow::anyhow!("agent_http_endpoint is required"))?,
             agent_ws_endpoint: self.agent_ws_endpoint.ok_or_else(|| anyhow::anyhow!("agent_ws_endpoint is required"))?,
-            //agent_host: self.agent_host.ok_or_else(|| anyhow::anyhow!("agent_host is required"))?,
-            //agent_http_port: self.agent_http_port.ok_or_else(|| anyhow::anyhow!("agent_http_port is required"))?,
-            //agent_ws_port: self.agent_ws_port.ok_or_else(|| anyhow::anyhow!("agent_ws_port is required"))?,
-            //agent_discovery_url: self.agent_discovery_url,
             agent_discoverable: self.agent_discoverable,
             agent_executor_url: self.agent_executor_url,
             agent_system_prompt: self.agent_system_prompt,
@@ -331,8 +265,6 @@ impl AgentConfigBuilder {
             agent_tags: self.agent_tags.unwrap_or_default(),
             agent_examples: self.agent_examples.unwrap_or_default(),
             agent_agents_references: self.agent_agents_references,
-            //agent_evaluation_service_url: self.agent_evaluation_service_url,
-            //agent_memory_service_url: self.agent_memory_service_url,
         })
     }
 }
@@ -343,7 +275,6 @@ impl AgentConfigBuilder {
 ///////////////////////////////////////////////////////////////
 
 // Agent info provider implementation
-//#[derive(Clone)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentReference {
     pub id: String,
@@ -372,23 +303,6 @@ impl AgentReference {
 // SETUP LOGGING LEVEL
 ///////////////////////////////////////////////////////////////
 
-pub fn setup_logging_old(log_level: &str) {
-
-    let default_filter = log_level.to_string(); // Use the provided log_level as the default
-
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_filter));
-
-    let subscriber = Registry::default().with(
-        fmt::layer()
-            .compact()
-            .with_ansi(true)
-            .with_filter(env_filter),
-    );
-
-    tracing::subscriber::set_global_default(subscriber).unwrap();
-}
-
 pub fn setup_logging(log_level: &str) {
 
     /************************************************/
@@ -416,4 +330,3 @@ pub fn setup_logging(log_level: &str) {
     tracing::subscriber::set_global_default(subscriber).unwrap();
     
 }
-
