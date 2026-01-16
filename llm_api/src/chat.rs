@@ -22,7 +22,7 @@ pub struct ChatLlmInteraction {
 }
 
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<Message>, // Keep existing message structure for history
@@ -81,7 +81,7 @@ pub struct FunctionName {
 // --- Structs for Response ---
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ChatCompletionResponse {
     pub id: String,
     pub object: String,
@@ -90,21 +90,21 @@ pub struct ChatCompletionResponse {
     pub choices: Vec<Choice>,
     pub usage: Usage,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system_fingerprint: Option<String>,
+    pub system_fingerprint: Option<String>,
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Choice {
     pub index: u32,
     pub message: ResponseMessage, // Use the modified message struct
     #[serde(skip_serializing_if = "Option::is_none")]
-    logprobs: Option<Value>, // Or specific struct if needed
+    pub logprobs: Option<Value>, // Or specific struct if needed
     pub finish_reason: String,    // "stop", "length", "tool_calls", etc.
 }
 
 // --- Modified Response Message & Tool Call Structs (Response) ---
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ResponseMessage {
     pub role: String, // "assistant"
     // Content might be null if tool_calls is present
@@ -128,7 +128,7 @@ pub struct FunctionCall {
 }
 // --- End Tool Call Structs ---
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
