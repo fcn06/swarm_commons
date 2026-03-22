@@ -148,9 +148,28 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
         // Place her user query handler
         let agent = self.agent.lock().await;
 
-        // Handle user request and metadata from original message and get execution result
-        let execution_result:ExecutionResult = agent.handle_request(llm_msg.clone(),message.metadata.clone()).await.expect("No Return from LLM");
-           
+        let execution_result: ExecutionResult = match self.agent.lock().await.handle_request(llm_msg.clone(), message.metadata.clone()).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("Agent execution failed: {}", e);
+                // Return a failed task with the error message instead of crashing
+                let error_msg = Message::agent_text(
+                    format!("Agent execution error: {}", e),
+                    uuid::Uuid::new_v4().to_string(),
+                );
+                let task = self
+                    .update_task_status(task_id, TaskState::Failed, Some(error_msg))
+                    .await?;
+                return Ok(task);
+            }
+        };
+
+
+
+
+
+
+
         // Convert the message Back to A2A Message
         let llm_response = LlmMessage {
             role: "agent".to_string(), // role: "tool".to_string(), // Or appropriate role based on ExecutionResult
