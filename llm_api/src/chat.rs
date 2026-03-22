@@ -142,7 +142,6 @@ impl ChatLlmInteraction {
     pub fn new(llm_url:String,model_id:String,llm_api_key:String) -> Self {
         
         Self {
- //           client:reqwest::Client::new(),
             client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new()),
             llm_url:llm_url,
             llm_api_key:llm_api_key,
@@ -241,8 +240,13 @@ impl ChatLlmInteraction {
                 sleep(delay).await;
                 delay *= 2; // Exponential backoff
             } else {
-                // Check for other HTTP errors and then deserialize
-                response.error_for_status_ref()?;
+                // Check for other HTTP errors and log the raw body before failing
+                if let Err(e) = response.error_for_status_ref() {
+                    let err_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+                    tracing::error!("LLM API returned HTTP {}: {}", e.status().map(|s| s.as_u16()).unwrap_or(0), err_body);
+                    return Err(e);
+                }
+                
                 let response_body = response.json::<ChatCompletionResponse>().await?;
                 debug!("LLM API Response Body: {:?}", response_body);
                 return Ok(response_body);
