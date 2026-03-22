@@ -142,7 +142,7 @@ impl ChatLlmInteraction {
     pub fn new(llm_url:String,model_id:String,llm_api_key:String) -> Self {
         
         Self {
-            client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().unwrap_or_else(|_| reqwest::Client::new()),
+            client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_else(|_| reqwest::Client::new()),
             llm_url:llm_url,
             llm_api_key:llm_api_key,
             model_id:model_id,
