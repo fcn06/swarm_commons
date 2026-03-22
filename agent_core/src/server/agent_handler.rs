@@ -146,7 +146,7 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
         let llm_msg = self.a2a_message_to_llm_message(&message)?;
 
         // Place her user query handler
-        let agent = self.agent.lock().await;
+        //let agent = self.agent.lock().await;
 
         let execution_result: ExecutionResult = match self.agent.lock().await.handle_request(llm_msg.clone(), message.metadata.clone()).await {
             Ok(result) => result,
