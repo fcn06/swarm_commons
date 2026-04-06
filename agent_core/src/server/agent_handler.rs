@@ -127,17 +127,19 @@ impl<T: Agent> AgentHandler<T> {
 #[async_trait]
 impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
 
-    async fn process_message<'a>(
-        &self,
-        task_id: &'a str,
-        message: &'a Message,
-        _session_id: Option<&'a str>,
-    ) -> Result<Task, A2AError> {
-        
+    async fn process_message(
+            &self,
+            task_id: &str,
+            message: &Message,
+            session_id: Option<&str>,
+        ) -> Result<Task, A2AError> {
+
+
+
         // This is where we need to process custom code for message handling
 
         // Create or get the session ID
-        let _session_id = _session_id.unwrap_or("default_session").to_string();
+        let _session_id = session_id.unwrap_or("default_session").to_string();
 
         // Create a new task
         let _task = self.create_task(task_id, "context_task").await?;
@@ -166,10 +168,6 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
 
 
 
-
-
-
-
         // Convert the message Back to A2A Message
         let llm_response = LlmMessage {
             role: "agent".to_string(), // role: "tool".to_string(), // Or appropriate role based on ExecutionResult
@@ -193,25 +191,27 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
 // below are all default boilerplate
 #[async_trait]
 impl<T: Agent> AsyncTaskManager for AgentHandler<T> {
-    async fn create_task<'a>(
-        &self,
-        task_id: &'a str,
-        context_id: &'a str,
-    ) -> Result<Task, A2AError> {
+
+    async fn create_task(
+            &self, 
+            task_id: &str, 
+            context_id: &str
+        ) -> Result<Task, A2AError> {
+
         self.storage.create_task(task_id, context_id).await
     }
 
-    async fn get_task<'a>(
+    async fn get_task(
         &self,
-        task_id: &'a str,
+        task_id:  &str,
         history_length: Option<u32>,
     ) -> Result<Task, A2AError> {
         self.storage.get_task(task_id, history_length).await
     }
 
-    async fn update_task_status<'a>(
+    async fn update_task_status(
         &self,
-        task_id: &'a str,
+        task_id: &str,
         state: TaskState,
         message: Option<Message>,
     ) -> Result<Task, A2AError> {
@@ -220,17 +220,17 @@ impl<T: Agent> AsyncTaskManager for AgentHandler<T> {
             .await
     }
 
-    async fn cancel_task<'a>(&self, task_id: &'a str) -> Result<Task, A2AError> {
+    async fn cancel_task(&self, task_id: & str) -> Result<Task, A2AError> {
         self.storage.cancel_task(task_id).await
     }
 
-    async fn task_exists<'a>(&self, task_id: &'a str) -> Result<bool, A2AError> {
+    async fn task_exists(&self, task_id: & str) -> Result<bool, A2AError> {
         self.storage.task_exists(task_id).await
     }
 
-    async fn list_tasks_v3<'a>(
+    async fn list_tasks_v3(
         &self,
-        params: &'a ListTasksParams, 
+        params: & ListTasksParams, 
     ) -> Result<ListTasksResult, A2AError> {
         self.storage.list_tasks_v3(params).await
     }
@@ -242,21 +242,21 @@ impl<T: Agent> AsyncTaskManager for AgentHandler<T> {
 #[async_trait]
 impl<T: Agent> AsyncNotificationManager for AgentHandler<T> {
 
-    async fn set_task_notification<'a>(
+    async fn set_task_notification(
         &self,
-        config: &'a TaskPushNotificationConfig,
+        config: & TaskPushNotificationConfig,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
         self.storage.set_task_notification(config).await
     }
 
-    async fn get_task_notification<'a>(
+    async fn get_task_notification(
         &self,
-        task_id: &'a str,
+        task_id: & str,
     ) -> Result<TaskPushNotificationConfig, A2AError> {
         self.storage.get_task_notification(task_id).await
     }
 
-    async fn remove_task_notification<'a>(&self, task_id: &'a str) -> Result<(), A2AError> {
+    async fn remove_task_notification(&self, task_id: & str) -> Result<(), A2AError> {
         self.storage.remove_task_notification(task_id).await
     }
 }
@@ -264,9 +264,9 @@ impl<T: Agent> AsyncNotificationManager for AgentHandler<T> {
 #[async_trait]
 impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
 
-    async fn add_status_subscriber<'a>(
+    async fn add_status_subscriber(
         &self,
-        task_id: &'a str,
+        task_id: & str,
         subscriber: Box<dyn Subscriber<TaskStatusUpdateEvent> + Send + Sync>,
     ) -> Result<String, A2AError> {
         self.storage
@@ -274,9 +274,9 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
             .await
     }
 
-    async fn add_artifact_subscriber<'a>(
+    async fn add_artifact_subscriber(
         &self,
-        task_id: &'a str,
+        task_id: & str,
         subscriber: Box<dyn Subscriber<TaskArtifactUpdateEvent> + Send + Sync>,
     ) -> Result<String, A2AError> {
         self.storage
@@ -284,21 +284,21 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
             .await
     }
 
-    async fn remove_subscription<'a>(&self, subscription_id: &'a str) -> Result<(), A2AError> {
+    async fn remove_subscription(&self, subscription_id: & str) -> Result<(), A2AError> {
         self.storage.remove_subscription(subscription_id).await
     }
 
-    async fn remove_task_subscribers<'a>(&self, task_id: &'a str) -> Result<(), A2AError> {
+    async fn remove_task_subscribers(&self, task_id: & str) -> Result<(), A2AError> {
         self.storage.remove_task_subscribers(task_id).await
     }
 
-    async fn get_subscriber_count<'a>(&self, task_id: &'a str) -> Result<usize, A2AError> {
+    async fn get_subscriber_count(&self, task_id: & str) -> Result<usize, A2AError> {
         self.storage.get_subscriber_count(task_id).await
     }
 
-    async fn broadcast_status_update<'a>(
+    async fn broadcast_status_update(
         &self,
-        task_id: &'a str,
+        task_id: & str,
         update: TaskStatusUpdateEvent,
     ) -> Result<(), A2AError> {
         // to avoid this error in http client
@@ -307,18 +307,18 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
         //Ok(())
     }
 
-    async fn broadcast_artifact_update<'a>(
+    async fn broadcast_artifact_update(
         &self,
-        task_id: &'a str,
+        task_id: & str,
         update: TaskArtifactUpdateEvent,
     ) -> Result<(), A2AError> {
         self.storage.broadcast_artifact_update(task_id, update).await
         //Ok(())
     }
 
-    async fn status_update_stream<'a>(
+    async fn status_update_stream(
         &self,
-        task_id: &'a str,
+        task_id: & str,
     ) -> Result<
         std::pin::Pin<
             Box<dyn futures::Stream<Item = Result<TaskStatusUpdateEvent, A2AError>> + Send>,
@@ -328,9 +328,9 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
         self.storage.status_update_stream(task_id).await
     }
 
-    async fn artifact_update_stream<'a>(
+    async fn artifact_update_stream(
         &self,
-        task_id: &'a str,
+        task_id: & str,
     ) -> Result<
         std::pin::Pin<
             Box<dyn futures::Stream<Item = Result<TaskArtifactUpdateEvent, A2AError>> + Send>,
@@ -340,9 +340,9 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
         self.storage.artifact_update_stream(task_id).await
     }
 
-    async fn combined_update_stream<'a>(
+    async fn combined_update_stream(
         &self,
-        task_id: &'a str,
+        task_id: & str,
     ) -> Result<
         std::pin::Pin<
             Box<

@@ -14,7 +14,7 @@ llm_api = { workspace = true }
 configuration = { workspace = true }
 
 
-a2a-rs = { workspace = true }
+a2a-rs = { workspace = true,  features = ["http-server", "http-client"] }
 
 
 axum = { workspace = true }
