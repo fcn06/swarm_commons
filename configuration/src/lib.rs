@@ -22,12 +22,26 @@ pub struct McpRuntimeConfig {
     pub agent_mcp_server_url: Option<String>,
     pub agent_mcp_server_api_key:Option<String>, // this is the API-key to connect to your mcp server
     pub agent_mcp_model_id: String,
+    pub agent_mcp_sanitizer_model_id: Option<String>,
     pub agent_mcp_llm_url: String, // This is the LLM that will manage interactions with MCP server. LLM_MCP_API_KEY is connected to this one
     pub agent_mcp_llm_api_key_env_var: Option<String>, // New field: name of environment variable holding the LLM API key
     pub agent_mcp_system_prompt: String,
     pub agent_mcp_evaluation_prompt: String,
     pub agent_mcp_correction_prompt: String,
     pub agent_mcp_endpoint_url: Option<String>, // This will come from command line or instance config
+    /// NATS server URL for agent-to-bridge communication.
+    /// Falls back to "nats://127.0.0.1:4222" when absent.
+    #[serde(default)]
+    pub agent_mcp_nats_url: Option<String>,
+    /// NATS dispatch subject for MCP tool calls.
+    /// Falls back to "mcp.v1.dispatch" when absent.
+    #[serde(default)]
+    pub agent_mcp_nats_dispatch_subject: Option<String>,
+    /// When true, the agent loop routes through an Evaluating state
+    /// that asks the LLM to judge tool results before continuing.
+    /// Adds one extra LLM round-trip per tool cycle. Default: false.
+    #[serde(default)]
+    pub agent_mcp_enable_evaluation: Option<bool>,
 }
 
 impl McpRuntimeConfig {
