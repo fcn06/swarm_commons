@@ -217,8 +217,8 @@ impl ChatLlmInteraction {
     ) -> Result<ChatCompletionResponse, reqwest::Error> {
         
         let mut retries = 0;
-        let max_retries = 3; // You can adjust this
-        let mut delay = Duration::from_secs(1); // Starting delay
+        let max_retries = 7; // You can adjust this
+        let mut delay = Duration::from_secs(2); // Starting delay
 
         loop {
             let response = self.client
@@ -236,9 +236,22 @@ impl ChatLlmInteraction {
                 if retries > max_retries {
                     return Err(response.error_for_status().unwrap_err()); // Return the last 429 error
                 }
-                warn!("Rate limit hit (429). Retrying in {:?}... (Retry {}/{})", delay, retries, max_retries);
-                sleep(delay).await;
-                delay *= 2; // Exponential backoff
+                
+                // Check if the API tells us exactly how long to wait
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(Duration::from_secs_f64);
+                let wait_time = retry_after.unwrap_or(delay);
+                
+                warn!("Rate limit hit (429). Retrying in {:?}... (Retry {}/{})", wait_time, retries, max_retries);
+                sleep(wait_time).await;
+                
+                if retry_after.is_none() {
+                    delay *= 2; // Exponential backoff only if no explicit Retry-After
+                }
             } else {
                 // Check for other HTTP errors and log the raw body before failing
                 if let Err(e) = response.error_for_status_ref() {
