@@ -217,8 +217,12 @@ impl ChatLlmInteraction {
     ) -> Result<ChatCompletionResponse, reqwest::Error> {
         
         let mut retries = 0;
-        let max_retries = 7; // You can adjust this
-        let mut delay = Duration::from_secs(2); // Starting delay
+        //let max_retries = 7; // You can adjust this
+        //let mut delay = Duration::from_secs(2); // Starting delay
+        let max_retries = 2;
+        let mut delay = Duration::from_secs(2);
+        let max_delay = Duration::from_secs(10); // Hard cap on any single wait
+
 
         loop {
             let response = self.client
@@ -244,13 +248,20 @@ impl ChatLlmInteraction {
                     .and_then(|h| h.to_str().ok())
                     .and_then(|s| s.parse::<f64>().ok())
                     .map(Duration::from_secs_f64);
-                let wait_time = retry_after.unwrap_or(delay);
+                //let wait_time = retry_after.unwrap_or(delay);
+                
+                // Cap Retry-After: Groq often sends 500-900s which blocks the agent
+                let wait_time = retry_after
+                    .map(|ra| ra.min(max_delay))
+                    .unwrap_or(delay)
+                    .min(max_delay);
                 
                 warn!("Rate limit hit (429). Retrying in {:?}... (Retry {}/{})", wait_time, retries, max_retries);
                 sleep(wait_time).await;
                 
                 if retry_after.is_none() {
-                    delay *= 2; // Exponential backoff only if no explicit Retry-After
+                    // delay *= 2; // Exponential backoff only if no explicit Retry-After
+                    delay = (delay * 2).min(max_delay);
                 }
             } else {
                 // Check for other HTTP errors and log the raw body before failing
