@@ -1,0 +1,18 @@
+[agent]
+name = "Swarm Server Agent"
+description = "An agent that is part of the Swarm network."
+doc_url = "https://g.co/gemini-codelab/swarm-agent-doc"
+
+llm_url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
+model_id = "gemini-1.5-flash"
+system_prompt = "You are a helpful assistant."
+
+http_endpoint = "0.0.0.0:8080"
+ws_endpoint = "0.0.0.0:8081"
+
+[agent.skill]
+id = "swarm-skill"
+name = "Swarm Skill"
+description = "A skill for interacting with the Swarm network."
+tags = ["swarm", "network"]
+examples = ["Ask the swarm to do something."]
