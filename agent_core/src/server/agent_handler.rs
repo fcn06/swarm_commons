@@ -6,7 +6,7 @@
 //! For production agents, you typically want to implement your own message handler
 //! and compose it with the storage implementations directly.
 
-// Example : https://github.com/EmilLindfors/a2a-rs/blob/master/a2a-rs/examples/http_client_server.rs
+// Example : https://github.com/EmilLindfors/a2a-rs/blob/master/http_client_server.rs
 
 use std::sync::{Arc};
 use tokio::sync::Mutex;
@@ -27,102 +27,58 @@ use a2a_rs::{
     },
 };
 
-use llm_api::chat::Message as LlmMessage;
 use crate::business_logic::agent::{Agent};
-//use crate::execution::execution_result::ExecutionResult;
 use agent_models::execution::execution_result::{ExecutionResult};
-
-/// Simple agent handler that coordinates all business capability traits
-/// by delegating to InMemoryTaskStorage which implements the actual functionality.
-///
-/// This is useful for:
-/// - Quick prototyping
-/// - Simple echo/test agents
-/// - Examples and demos
-/// - Agents that don't need custom message processing
-///
-/// For production agents with custom business logic, implement your own
-/// `AsyncMessageHandler` and compose it with storage using `DefaultRequestProcessor`.
-///
-/// Todo : alter SimpleAgentHandler definition to add appropriate runtine entities to connect to AI, MCP, etc...
-///
+use crate::interaction_handler::InteractionHandler;
+use crate::session::SessionStore;
 
 #[derive(Clone)]
 pub struct AgentHandler <T: Agent> {
     agent: Arc<Mutex<T>>,
     storage: Arc<InMemoryTaskStorage>,
-    //storage: InMemoryTaskStorage,
+    session_store: Arc<SessionStore>,
+    interaction_handler: Arc<InteractionHandler>,
 }
 
 impl<T: Agent> AgentHandler<T> {
-    /// Create a new simple agent handler
     pub fn new(agent:T) -> Self {
+        let session_store = Arc::new(SessionStore::new());
+        let interaction_handler = Arc::new(InteractionHandler::new(session_store.clone()));
 
-        println!("Creating AgentHandler");
         Self {
             agent: Arc::new(Mutex::new(agent)),
-            //storage: InMemoryTaskStorage::new(),
             storage: Arc::new(InMemoryTaskStorage::new()),
+            session_store,
+            interaction_handler,
         }
-
     }
 
-
-
-    /// Create with a custom storage implementation
     pub fn with_storage(
         agent:T,
         storage: InMemoryTaskStorage,
     ) -> Self {
+        let session_store = Arc::new(SessionStore::new());
+        let interaction_handler = Arc::new(InteractionHandler::new(session_store.clone()));
        
         Self {
             agent: Arc::new(Mutex::new(agent)),
-            //storage: storage,
             storage: Arc::new(storage),
+            session_store,
+            interaction_handler,
         }
-
     }
 
-    /// Get a reference to the underlying storage
     #[allow(dead_code)]
     pub fn storage(&self) -> &Arc<InMemoryTaskStorage> {
         &self.storage
     }
 
-    fn a2a_message_to_llm_message(&self, a2a_message: &Message) -> Result<LlmMessage, A2AError> {
-        // Extract user query
-        let user_query = a2a_message
-            .parts
-            .iter()
-            .filter_map(|part| match part {
-                MessagePart::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Convert A2A Message into LLM Message
-        let llm_msg = LlmMessage {
-            role: "user".to_string(),
-            content: Some(user_query.to_string()),
-            tool_call_id: None,
-            tool_calls:None
-        };
-
-        Ok(llm_msg)
-    }
-
-    // other specific functions, like Validate Content, etc...
-    fn llm_message_to_a2a_message(&self, llm_message: LlmMessage) -> Result<Message, A2AError> {
-        // Convert LLM Message into A2A
-        // todo use agent_text or user_text depending on role
+    fn llm_message_to_a2a_message(&self, content: String) -> Result<Message, A2AError> {
         let message_id = uuid::Uuid::new_v4().to_string();
-        let llm_msg = Message::agent_text(llm_message.content.expect("Empty Message"), message_id);
+        let llm_msg = Message::agent_text(content, message_id);
         Ok(llm_msg)
     }
 }
-
-// Asynchronous trait implementations - delegate to storage
 
 #[async_trait]
 impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
@@ -134,27 +90,38 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
             session_id: Option<&str>,
         ) -> Result<Task, A2AError> {
 
-
-
-        // This is where we need to process custom code for message handling
-
-        // Create or get the session ID
-        let _session_id = session_id.unwrap_or("default_session").to_string();
-
-        // Create a new task
+        let session_id = session_id.unwrap_or("default_session").to_string();
         let _task = self.create_task(task_id, "context_task").await?;
 
-        // Transform a2a message into llm message
-        let llm_msg = self.a2a_message_to_llm_message(&message)?;
+        let user_query = message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        // Place her user query handler
-        //let agent = self.agent.lock().await;
+        let gemini_request = match self.interaction_handler.process_request(&session_id, user_query).await {
+            Ok(req) => req,
+            Err(e) => {
+                tracing::error!("Interaction handler failed: {}", e);
+                let error_msg = Message::agent_text(
+                    format!("Interaction handler error: {}", e),
+                    uuid::Uuid::new_v4().to_string(),
+                );
+                let task = self
+                    .update_task_status(task_id, TaskState::Failed, Some(error_msg))
+                    .await?;
+                return Ok(task);
+            }
+        };
 
-        let execution_result: ExecutionResult = match self.agent.lock().await.handle_request(llm_msg.clone(), message.metadata.clone()).await {
+        let execution_result: ExecutionResult = match self.agent.lock().await.handle_request(gemini_request, message.metadata.clone()).await {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Agent execution failed: {}", e);
-                // Return a failed task with the error message instead of crashing
                 let error_msg = Message::agent_text(
                     format!("Agent execution error: {}", e),
                     uuid::Uuid::new_v4().to_string(),
@@ -166,19 +133,8 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
             }
         };
 
+        let response_message = self.llm_message_to_a2a_message(execution_result.output.to_string())?;
 
-
-        // Convert the message Back to A2A Message
-        let llm_response = LlmMessage {
-            role: "agent".to_string(), // role: "tool".to_string(), // Or appropriate role based on ExecutionResult
-            content: Some(execution_result.output.to_string()), // Changed .clone() to .to_string()
-            tool_call_id: None,
-            tool_calls:None
-        };
-        let response_message = self.llm_message_to_a2a_message(llm_response)?;
-        
-
-        // Add the message to the task and update status
         let task = self
             .update_task_status(task_id, TaskState::Completed, Some(response_message))
             .await?;
@@ -187,8 +143,6 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
     }
 }
 
-
-// below are all default boilerplate
 #[async_trait]
 impl<T: Agent> AsyncTaskManager for AgentHandler<T> {
 
@@ -234,9 +188,6 @@ impl<T: Agent> AsyncTaskManager for AgentHandler<T> {
     ) -> Result<ListTasksResult, A2AError> {
         self.storage.list_tasks_v3(params).await
     }
-
-
-
 }
 
 #[async_trait]
@@ -301,10 +252,7 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
         task_id: & str,
         update: TaskStatusUpdateEvent,
     ) -> Result<(), A2AError> {
-        // to avoid this error in http client
-        // https://github.com/EmilLindfors/a2a-rs/blob/b2d8dbf9ef0c4e5a317b63e1bbb2e092d61c0e04/a2a-rs/src/adapter/storage/task_storage.rs#L28
         self.storage.broadcast_status_update(task_id, update).await
-        //Ok(())
     }
 
     async fn broadcast_artifact_update(
@@ -313,7 +261,6 @@ impl<T: Agent> AsyncStreamingHandler for AgentHandler<T> {
         update: TaskArtifactUpdateEvent,
     ) -> Result<(), A2AError> {
         self.storage.broadcast_artifact_update(task_id, update).await
-        //Ok(())
     }
 
     async fn status_update_stream(

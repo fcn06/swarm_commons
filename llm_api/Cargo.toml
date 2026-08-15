@@ -16,6 +16,7 @@ rustls = { workspace = true }
 anyhow = { workspace = true }
 rmcp = { workspace = true }
 regex = { workspace = true }
+agent_models = { path = "../agent_models" }
 
 # Logging - optional
 tracing = { workspace = true }

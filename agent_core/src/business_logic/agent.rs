@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use agent_models::execution::execution_result::{ExecutionResult};
 
-use llm_api::chat::Message as LlmMessage;
+use llm_api::google_interactions::GeminiInteractionRequest;
 use configuration::AgentConfig;
 
 use std::sync::Arc;
@@ -26,6 +26,6 @@ pub trait Agent: Send + Sync  + Clone + 'static {
         discovery_service: Option<Arc<dyn DiscoveryService>>,
         workflow_service: Option<Arc<dyn WorkflowServiceApi>>
     ) -> anyhow::Result<Self>;
-    async fn handle_request(&self, request: LlmMessage, metadata:Option<Map<String, Value>>) -> anyhow::Result<ExecutionResult>;
+    async fn handle_request(&self, request: GeminiInteractionRequest, metadata:Option<Map<String, Value>>) -> anyhow::Result<ExecutionResult>;
     
 }
