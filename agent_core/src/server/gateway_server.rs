@@ -73,6 +73,255 @@ impl GatewayBackend for SimpleGatewayBackend {
     }
 }
 
+/// Multi-model gateway backend capable of routing to Google Gemini, Groq, OpenAI, or local models
+pub struct MultiModelGatewayBackend {
+    pub client: reqwest::Client,
+    pub gemini_api_key: Option<String>,
+    pub groq_api_key: Option<String>,
+    pub openai_api_key: Option<String>,
+    pub custom_endpoint: Option<String>,
+}
+
+impl Default for MultiModelGatewayBackend {
+    fn default() -> Self {
+        Self::from_env()
+    }
+}
+
+impl MultiModelGatewayBackend {
+    pub fn from_env() -> Self {
+        let gemini_api_key = std::env::var("GEMINI_API_KEY")
+            .or_else(|_| std::env::var("LLM_GEMINI_API_KEY"))
+            .ok();
+        let groq_api_key = std::env::var("GROQ_API_KEY")
+            .or_else(|_| std::env::var("LLM_GROQ_API_KEY"))
+            .or_else(|_| std::env::var("LLM_API_KEY"))
+            .ok();
+        let openai_api_key = std::env::var("OPENAI_API_KEY").ok();
+        let custom_endpoint = std::env::var("SWARM_LLM_URL").ok();
+
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(45))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            gemini_api_key,
+            groq_api_key,
+            openai_api_key,
+            custom_endpoint,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl GatewayBackend for MultiModelGatewayBackend {
+    async fn process_turn(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        model: Option<&str>,
+    ) -> Result<Vec<ResponseItem>, String> {
+        let model_str = model.unwrap_or("gemini-2.0-flash");
+
+        // 1. Google Gemini routing via GoogleInteractionsAdapter
+        if (model_str.contains("gemini") || model_str.starts_with("google")) && self.gemini_api_key.is_some() {
+            let key = self.gemini_api_key.as_ref().unwrap();
+            let gemini_req = llm_api::google_interactions::GoogleInteractionsAdapter::to_gemini_request(
+                history,
+                Some(session_id.to_string()),
+            ).map_err(|e| format!("Failed to build Gemini interaction request: {}", e))?;
+
+            let target_model = model_str.strip_prefix("google/").unwrap_or(model_str);
+            let url = format!(
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+                target_model, key
+            );
+
+            let res = self.client.post(&url)
+                .json(&gemini_req)
+                .send()
+                .await
+                .map_err(|e| format!("Gemini API request failed: {}", e))?;
+
+            if !res.status().is_success() {
+                let err_text = res.text().await.unwrap_or_default();
+                return Err(format!("Gemini API error: {}", err_text));
+            }
+
+            #[derive(serde::Deserialize)]
+            struct GeminiResponse {
+                candidates: Option<Vec<GeminiCandidate>>,
+            }
+            #[derive(serde::Deserialize)]
+            struct GeminiCandidate {
+                content: Option<GeminiContent>,
+            }
+            #[derive(serde::Deserialize)]
+            struct GeminiContent {
+                parts: Option<Vec<GeminiPartResponse>>,
+            }
+            #[derive(serde::Deserialize)]
+            #[serde(untagged)]
+            enum GeminiPartResponse {
+                Text { text: String },
+                FunctionCall { function_call: serde_json::Value },
+            }
+
+            let gemini_data: GeminiResponse = res.json().await
+                .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
+
+            let mut output_items = Vec::new();
+            if let Some(candidates) = gemini_data.candidates {
+                if let Some(first) = candidates.into_iter().next() {
+                    if let Some(content) = first.content {
+                        if let Some(parts) = content.parts {
+                            for part in parts {
+                                match part {
+                                    GeminiPartResponse::Text { text } => {
+                                        output_items.push(ResponseItem::Message {
+                                            id: format!("resp_msg_{}", Uuid::new_v4()),
+                                            role: Role::Assistant,
+                                            content: vec![ContentPart::Text { text }],
+                                        });
+                                    }
+                                    GeminiPartResponse::FunctionCall { function_call } => {
+                                        let name = function_call.get("name").and_then(|v| v.as_str()).unwrap_or("unknown_tool").to_string();
+                                        let args = function_call.get("args").map(|v| v.to_string()).unwrap_or_default();
+                                        output_items.push(ResponseItem::FunctionCall {
+                                            id: format!("fc_{}", Uuid::new_v4()),
+                                            call_id: format!("call_{}", Uuid::new_v4()),
+                                            name,
+                                            arguments: args,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !output_items.is_empty() {
+                return Ok(output_items);
+            }
+        }
+
+        // 2. Groq / OpenAI / Custom chat completion routing
+        let (endpoint, api_key) = if let Some(custom) = &self.custom_endpoint {
+            (custom.clone(), self.openai_api_key.clone().unwrap_or_default())
+        } else if model_str.starts_with("groq/") || self.groq_api_key.is_some() {
+            (
+                "https://api.groq.com/openai/v1/chat/completions".to_string(),
+                self.groq_api_key.clone().unwrap_or_default(),
+            )
+        } else if let Some(key) = &self.openai_api_key {
+            (
+                "https://api.openai.com/v1/chat/completions".to_string(),
+                key.clone(),
+            )
+        } else {
+            // Fallback to SimpleGatewayBackend echo
+            return SimpleGatewayBackend.process_turn(session_id, history, model).await;
+        };
+
+        if !api_key.is_empty() {
+            let mut messages = Vec::new();
+            for item in history {
+                match item {
+                    ResponseItem::Message { role, content, .. } => {
+                        let r = match role {
+                            Role::System => "system",
+                            Role::Assistant => "assistant",
+                            Role::Tool => "tool",
+                            Role::User => "user",
+                        };
+                        let text = content.iter().filter_map(|p| match p {
+                            ContentPart::Text { text } => Some(text.clone()),
+                            _ => None,
+                        }).collect::<Vec<_>>().join("\n");
+                        messages.push(llm_api::chat::Message {
+                            role: r.to_string(),
+                            content: Some(text),
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
+                    }
+                    ResponseItem::FunctionCall { call_id, name, arguments, .. } => {
+                        messages.push(llm_api::chat::Message {
+                            role: "assistant".to_string(),
+                            content: None,
+                            tool_call_id: None,
+                            tool_calls: Some(vec![llm_api::chat::ToolCall {
+                                id: call_id.clone(),
+                                r#type: "function".to_string(),
+                                function: llm_api::chat::FunctionCall {
+                                    name: name.clone(),
+                                    arguments: arguments.clone(),
+                                },
+                            }]),
+                        });
+                    }
+                    ResponseItem::FunctionCallOutput { call_id, output, .. } => {
+                        messages.push(llm_api::chat::Message {
+                            role: "tool".to_string(),
+                            content: Some(output.clone()),
+                            tool_call_id: Some(call_id.clone()),
+                            tool_calls: None,
+                        });
+                    }
+                    ResponseItem::Reasoning { .. } => {}
+                }
+            }
+
+            let clean_model = model_str.strip_prefix("groq/").unwrap_or(model_str);
+            let llm = llm_api::chat::ChatLlmInteraction::new(endpoint, clean_model.to_string(), api_key);
+            let chat_req = llm_api::chat::ChatCompletionRequest {
+                model: clean_model.to_string(),
+                messages,
+                temperature: Some(0.7),
+                max_tokens: None,
+                top_p: None,
+                stop: None,
+                stream: None,
+                tools: None,
+                tool_choice: None,
+            };
+
+            let res = llm.call_chat_completions_v2(&chat_req).await
+                .map_err(|e| format!("Chat completions call failed: {}", e))?;
+
+            if let Some(choice) = res.choices.into_iter().next() {
+                let mut output_items = Vec::new();
+                if let Some(tool_calls) = choice.message.tool_calls {
+                    for tc in tool_calls {
+                        output_items.push(ResponseItem::FunctionCall {
+                            id: format!("fc_{}", Uuid::new_v4()),
+                            call_id: tc.id,
+                            name: tc.function.name,
+                            arguments: tc.function.arguments,
+                        });
+                    }
+                }
+                if let Some(content) = choice.message.content {
+                    if !content.is_empty() {
+                        output_items.push(ResponseItem::Message {
+                            id: format!("resp_msg_{}", Uuid::new_v4()),
+                            role: Role::Assistant,
+                            content: vec![ContentPart::Text { text: content }],
+                        });
+                    }
+                }
+                if !output_items.is_empty() {
+                    return Ok(output_items);
+                }
+            }
+        }
+
+        // Default mock fallback
+        SimpleGatewayBackend.process_turn(session_id, history, model).await
+    }
+}
+
 /// Shared Gateway State
 #[derive(Clone)]
 pub struct GatewayState {

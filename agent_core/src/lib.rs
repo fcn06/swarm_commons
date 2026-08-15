@@ -5,4 +5,4 @@ pub mod session;
 pub mod interaction_handler;
 
 pub use session::*;
-pub use server::gateway_server::{GatewayBackend, GatewayServer, GatewayState, SimpleGatewayBackend};
+pub use server::gateway_server::{GatewayBackend, GatewayServer, GatewayState, MultiModelGatewayBackend, SimpleGatewayBackend};
