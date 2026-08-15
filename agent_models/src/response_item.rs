@@ -47,6 +47,49 @@ pub enum ContentPart {
     Image { media_type: String, data_base64: String },
 }
 
+/// Open Responses: Input format can be a single prompt string or a list of ResponseItems
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ResponsesInput {
+    Text(String),
+    Items(Vec<ResponseItem>),
+}
+
+/// Open Responses: Request schema for POST /v1/responses
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CreateResponseRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub input: Option<ResponsesInput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+/// Open Responses: Response schema for POST /v1/responses (non-streaming)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResponseObject {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub output: Vec<ResponseItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ResponseUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ResponseUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub total_tokens: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +148,42 @@ mod tests {
 
         assert_eq!(call, serde_json::from_str(&json_call).unwrap());
         assert_eq!(output, serde_json::from_str(&json_output).unwrap());
+    }
+
+    #[test]
+    fn test_open_responses_request_serde() {
+        let req_str = r#"{
+            "model": "gpt-4o",
+            "input": "What is the capital of France?",
+            "previous_response_id": "resp_prev_123",
+            "stream": false
+        }"#;
+
+        let req: CreateResponseRequest = serde_json::from_str(req_str).unwrap();
+        assert_eq!(req.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(req.previous_response_id.as_deref(), Some("resp_prev_123"));
+        match req.input {
+            Some(ResponsesInput::Text(s)) => assert_eq!(s, "What is the capital of France?"),
+            _ => panic!("Expected text input"),
+        }
+
+        let items_req_str = r#"{
+            "input": [
+                {
+                    "type": "message",
+                    "id": "m1",
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Hello"}]
+                }
+            ]
+        }"#;
+
+        let req2: CreateResponseRequest = serde_json::from_str(items_req_str).unwrap();
+        match req2.input {
+            Some(ResponsesInput::Items(items)) => {
+                assert_eq!(items.len(), 1);
+            }
+            _ => panic!("Expected items input"),
+        }
     }
 }

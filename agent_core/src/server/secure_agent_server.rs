@@ -46,6 +46,7 @@ impl<T:Agent> SecureAgentServer<T> {
     }
 
     /// Create in-memory storage with push notification
+    #[allow(dead_code)]
     fn create_in_memory_storage_with_push_notification(&self) -> InMemoryTaskStorage {
         tracing::info!("Using in-memory storage with push notification support");
         let push_sender = HttpPushNotificationSender::new()

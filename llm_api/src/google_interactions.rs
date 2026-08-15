@@ -4,39 +4,46 @@ use std::collections::HashMap;
 
 // Data structures for Google's /v1/interactions API
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GeminiInteractionRequest {
     pub contents: Vec<Content>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_interaction_id: Option<String>,
-    // Add other fields like tools, safetySettings etc. as needed
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Content {
     pub role: String, // "user" or "model"
     pub parts: Vec<Part>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[serde(untagged)]
 pub enum Part {
     Text { text: String },
+    InlineData { inline_data: InlineData },
     FunctionCall { function_call: FunctionCall },
     FunctionResponse { function_response: FunctionResponse },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InlineData {
+    pub mime_type: String,
+    pub data: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FunctionCall {
     pub name: String,
     pub args: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FunctionResponse {
     pub name: String,
@@ -62,7 +69,7 @@ impl GoogleInteractionsAdapter {
                     let gemini_role = match role {
                         Role::User => "user".to_string(),
                         Role::Assistant => "model".to_string(),
-                        // System role needs to be handled, often as the first user message
+                        // System role is mapped to user role prompt in Google Interactions format
                         Role::System => "user".to_string(), 
                         Role::Tool => continue, // Handled by FunctionCallOutput
                     };
@@ -71,44 +78,55 @@ impl GoogleInteractionsAdapter {
                         .iter()
                         .map(|part| match part {
                             ContentPart::Text { text } => Part::Text { text: text.clone() },
-                            // Image conversion would go here
-                            _ => unimplemented!(),
+                            ContentPart::Image { media_type, data_base64 } => Part::InlineData {
+                                inline_data: InlineData {
+                                    mime_type: media_type.clone(),
+                                    data: data_base64.clone(),
+                                },
+                            },
                         })
                         .collect();
                     
                     contents.push(Content { role: gemini_role, parts });
                 }
                 ResponseItem::FunctionCall { name, arguments, call_id, .. } => {
-                     // This assumes a function call is always preceded by a model message
+                    let args: serde_json::Value = serde_json::from_str(arguments)
+                        .unwrap_or_else(|_| serde_json::json!({ "raw": arguments }));
+                    let call_part = Part::FunctionCall {
+                        function_call: FunctionCall {
+                            name: name.clone(),
+                            args,
+                        },
+                    };
+                    function_calls.insert(call_id.clone(), name.clone());
+
                     if let Some(last_content) = contents.last_mut() {
                         if last_content.role == "model" {
-                            let args: serde_json::Value = serde_json::from_str(arguments)?;
-                            last_content.parts.push(Part::FunctionCall {
-                                function_call: FunctionCall {
-                                    name: name.clone(),
-                                    args,
-                                },
-                            });
-                            function_calls.insert(call_id.clone(), name.clone());
+                            last_content.parts.push(call_part);
+                            continue;
                         }
                     }
+                    contents.push(Content {
+                        role: "model".to_string(),
+                        parts: vec![call_part],
+                    });
                 }
                 ResponseItem::FunctionCallOutput { call_id, output, .. } => {
-                    if let Some(name) = function_calls.get(call_id) {
-                        let response: serde_json::Value = serde_json::from_str(output)?;
-                        contents.push(Content {
-                            role: "user".to_string(), // In Gemini, function responses are in a user role content
-                            parts: vec![Part::FunctionResponse {
-                                function_response: FunctionResponse {
-                                    name: name.clone(),
-                                    response,
-                                },
-                            }],
-                        });
-                    }
+                    let name = function_calls.get(call_id).cloned().unwrap_or_else(|| "unknown_function".to_string());
+                    let response: serde_json::Value = serde_json::from_str(output)
+                        .unwrap_or_else(|_| serde_json::json!({ "output": output }));
+                    contents.push(Content {
+                        role: "user".to_string(),
+                        parts: vec![Part::FunctionResponse {
+                            function_response: FunctionResponse {
+                                name,
+                                response,
+                            },
+                        }],
+                    });
                 }
                 ResponseItem::Reasoning { .. } => {
-                    // Reasoning is internal to the swarm, not sent to Gemini
+                    // Internal agent reasoning trace is not sent directly to Gemini endpoint
                 }
             }
         }
@@ -117,5 +135,85 @@ impl GoogleInteractionsAdapter {
             contents,
             previous_interaction_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_models::response_item::{ContentPart, ResponseItem, Role};
+
+    #[test]
+    fn test_to_gemini_request_conversation_flow() {
+        let history = vec![
+            ResponseItem::Message {
+                id: "msg_sys".to_string(),
+                role: Role::System,
+                content: vec![ContentPart::Text {
+                    text: "You are a helpful coding assistant.".to_string(),
+                }],
+            },
+            ResponseItem::Message {
+                id: "msg_user".to_string(),
+                role: Role::User,
+                content: vec![ContentPart::Text {
+                    text: "What is the weather in London?".to_string(),
+                }],
+            },
+            ResponseItem::Reasoning {
+                id: "reason_1".to_string(),
+                thought_process: "User is asking about London weather, need to call weather tool.".to_string(),
+                signature: None,
+            },
+            ResponseItem::FunctionCall {
+                id: "fc_1".to_string(),
+                call_id: "call_123".to_string(),
+                name: "get_weather".to_string(),
+                arguments: r#"{"city":"London"}"#.to_string(),
+            },
+            ResponseItem::FunctionCallOutput {
+                id: "fco_1".to_string(),
+                call_id: "call_123".to_string(),
+                output: r#"{"temperature": 18, "condition": "Cloudy"}"#.to_string(),
+                is_error: false,
+            },
+            ResponseItem::Message {
+                id: "msg_asst".to_string(),
+                role: Role::Assistant,
+                content: vec![ContentPart::Text {
+                    text: "The weather in London is 18°C and cloudy.".to_string(),
+                }],
+            },
+        ];
+
+        let req = GoogleInteractionsAdapter::to_gemini_request(&history, Some("inter_prev_999".to_string())).unwrap();
+
+        assert_eq!(req.previous_interaction_id, Some("inter_prev_999".to_string()));
+        // Expected contents: System -> "user", User -> "user", FunctionCall -> "model", FunctionCallOutput -> "user", Assistant -> "model"
+        assert_eq!(req.contents.len(), 5);
+        assert_eq!(req.contents[0].role, "user");
+        assert_eq!(req.contents[1].role, "user");
+        assert_eq!(req.contents[2].role, "model");
+        assert_eq!(req.contents[3].role, "user");
+        assert_eq!(req.contents[4].role, "model");
+    }
+
+    #[test]
+    fn test_gemini_image_part_handling() {
+        let history = vec![ResponseItem::Message {
+            id: "msg_img".to_string(),
+            role: Role::User,
+            content: vec![
+                ContentPart::Text { text: "Describe this:".to_string() },
+                ContentPart::Image {
+                    media_type: "image/png".to_string(),
+                    data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_string(),
+                },
+            ],
+        }];
+
+        let req = GoogleInteractionsAdapter::to_gemini_request(&history, None).unwrap();
+        assert_eq!(req.contents.len(), 1);
+        assert_eq!(req.contents[0].parts.len(), 2);
     }
 }

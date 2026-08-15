@@ -39,3 +39,7 @@ chrono={ workspace = true }
 toml = { workspace = true }
 
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+http-body-util = { workspace = true }

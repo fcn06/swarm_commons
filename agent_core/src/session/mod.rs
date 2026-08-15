@@ -15,12 +15,15 @@ pub struct Session {
 #[derive(Debug, Default)]
 pub struct SessionStore {
     sessions: DashMap<String, Session>,
+    // Mapping from response_id / parent_response_id to session_id for fast lookup
+    response_to_session: DashMap<String, String>,
 }
 
 impl SessionStore {
     pub fn new() -> Self {
         Self {
             sessions: DashMap::new(),
+            response_to_session: DashMap::new(),
         }
     }
 
@@ -37,9 +40,38 @@ impl SessionStore {
             .clone()
     }
 
+    /// Resolve or create a session id based on an optional previous_response_id.
+    /// If previous_response_id matches an existing session ID or registered response ID, that session is used.
+    /// Otherwise, if previous_response_id is provided, it is used as a new session ID or mapped.
+    pub async fn resolve_session(&self, previous_response_id: Option<&str>) -> Session {
+        if let Some(prev_id) = previous_response_id {
+            if let Some(session_id) = self.response_to_session.get(prev_id) {
+                return self.get_or_create(session_id.value()).await;
+            }
+            if self.sessions.contains_key(prev_id) {
+                return self.get_or_create(prev_id).await;
+            }
+            // Create a new session with id matching or referencing previous_response_id
+            let session = self.get_or_create(prev_id).await;
+            session
+        } else {
+            let new_session_id = uuid::Uuid::new_v4().to_string();
+            self.get_or_create(&new_session_id).await
+        }
+    }
+
     pub async fn append_items(&self, session_id: &str, new_items: &[ResponseItem]) -> Vec<ResponseItem> {
         let session = self.get_or_create(session_id).await;
         let mut items = session.items.write().await;
+        for item in new_items {
+            let item_id = match item {
+                ResponseItem::Message { id, .. } => id.clone(),
+                ResponseItem::Reasoning { id, .. } => id.clone(),
+                ResponseItem::FunctionCall { id, .. } => id.clone(),
+                ResponseItem::FunctionCallOutput { id, .. } => id.clone(),
+            };
+            self.response_to_session.insert(item_id, session_id.to_string());
+        }
         items.extend(new_items.iter().cloned());
         items.clone()
     }
@@ -54,6 +86,7 @@ impl SessionStore {
     }
 
     pub async fn set_parent_response_id(&self, session_id: &str, parent_response_id: String) {
+        self.response_to_session.insert(parent_response_id.clone(), session_id.to_string());
         if let Some(mut session) = self.sessions.get_mut(session_id) {
             session.parent_response_id = Some(parent_response_id);
         }
@@ -91,6 +124,28 @@ mod tests {
         let retrieved_history = store.get_history(session_id).await;
         assert_eq!(retrieved_history.len(), 1);
         assert_eq!(retrieved_history[0], item1);
+    }
+
+    #[tokio::test]
+    async fn test_session_resolution_by_previous_response_id() {
+        let store = SessionStore::new();
+        let s1 = store.resolve_session(None).await;
+        let item1 = ResponseItem::Message {
+            id: "resp_msg_100".to_string(),
+            role: Role::Assistant,
+            content: vec![ContentPart::Text {
+                text: "Turn 1 answer".to_string(),
+            }],
+        };
+        store.append_items(&s1.id, &[item1]).await;
+        store.set_parent_response_id(&s1.id, "resp_msg_100".to_string()).await;
+
+        // Next request provides previous_response_id
+        let s2 = store.resolve_session(Some("resp_msg_100")).await;
+        assert_eq!(s1.id, s2.id);
+
+        let history = store.get_history(&s2.id).await;
+        assert_eq!(history.len(), 1);
     }
 
     #[tokio::test]

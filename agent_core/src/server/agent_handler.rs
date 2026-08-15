@@ -73,6 +73,11 @@ impl<T: Agent> AgentHandler<T> {
         &self.storage
     }
 
+    #[allow(dead_code)]
+    pub fn session_store(&self) -> &Arc<SessionStore> {
+        &self.session_store
+    }
+
     fn llm_message_to_a2a_message(&self, content: String) -> Result<Message, A2AError> {
         let message_id = uuid::Uuid::new_v4().to_string();
         let llm_msg = Message::agent_text(content, message_id);
