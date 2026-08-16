@@ -418,6 +418,7 @@ async fn handle_responses(
     };
 
     // 5. Append output items to session and track parent response ID
+    let response_id = format!("resp_{}", Uuid::new_v4());
     if let Some(last_item) = output_items.last() {
         let last_id = match last_item {
             ResponseItem::Message { id, .. } => id.clone(),
@@ -432,10 +433,13 @@ async fn handle_responses(
     }
     state
         .session_store
+        .set_parent_response_id(&session.id, response_id.clone())
+        .await;
+    state
+        .session_store
         .append_items(&session.id, &output_items)
         .await;
 
-    let response_id = format!("resp_{}", Uuid::new_v4());
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
