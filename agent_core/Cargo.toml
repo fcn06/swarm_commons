@@ -20,6 +20,7 @@ a2a-rs = { workspace = true,  features = ["http-server", "http-client"] }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+jsonwebtoken = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 dashmap = "6.0"

@@ -56,9 +56,9 @@ impl<T:Agent> SecureAgentServer<T> {
     }
 
     async fn register_with_discovery_service(&self, agent_definition: &AgentDefinition) -> Result<()> {
-        let max_retries = 2;
+        let max_retries = 3;
         let mut retries = 0;
-        let mut delay = 1; // seconds
+        let mut delay = std::time::Duration::from_millis(1000);
 
         if let Some(ds) = &self.discovery_service {
             loop {
@@ -72,9 +72,9 @@ impl<T:Agent> SecureAgentServer<T> {
                     Err(e) => {
                         retries += 1;
                         if retries < max_retries {
-                            tracing::warn!("Failed to register with discovery service, attempt {}/{}. Error: {}. Retrying in {} seconds...", retries, max_retries, e, delay);
-                            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-                            delay *= 2; // Exponential backoff
+                            tracing::warn!("Failed to register with discovery service, attempt {}/{}. Error: {}. Retrying in {:?}...", retries, max_retries, e, delay);
+                            tokio::time::sleep(delay).await;
+                            delay = std::cmp::min(delay * 2, std::time::Duration::from_secs(30));
                         } else {
                             tracing::error!("Failed to register with discovery service after {} attempts. Error: {}. Proceeding without discovery service registration.", max_retries, e);
                             // Allow the agent to start even if registration fails
@@ -160,15 +160,6 @@ impl<T:Agent> SecureAgentServer<T> {
         );
 
         println!("💾 Storage: In-memory (non-persistent)");
-        
-        /* 
-        println!("🔓 Authentication: None (public access)");
-        let server = HttpServer::new(processor, agent_info, bind_address);
-        server
-            .start()
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
-        */
 
         match &self.auth {
             AuthConfig::None => {
@@ -219,13 +210,118 @@ impl<T:Agent> SecureAgentServer<T> {
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
             }
+            AuthConfig::OAuth2Jwt { secret, audience, issuer } => {
+                println!("🔐 Authentication: OAuth2 JWT Bearer Token validation");
+                let authenticator = OAuth2JwtAuthenticator::new(secret, audience.clone(), issuer.clone());
+                let server = HttpServer::with_auth(processor, agent_info, bind_address, authenticator);
+                server
+                    .start()
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            }
         }
 
 
     }
 }
 
+/// Dynamic OAuth2 JWT authenticator wrapper for AXUM HTTP server
+#[derive(Clone)]
+pub struct OAuth2JwtAuthenticator {
+    secret: String,
+    audience: String,
+    issuer: String,
+    scheme: a2a_rs::domain::core::agent::SecurityScheme,
+}
 
+#[derive(Debug, Serialize, Deserialize)]
+struct JwtClaims {
+    #[serde(default)]
+    pub sub: Option<String>,
+    #[serde(default)]
+    pub aud: Option<serde_json::Value>,
+    #[serde(default)]
+    pub iss: Option<String>,
+    #[serde(default)]
+    pub exp: Option<usize>,
+    #[serde(default)]
+    pub nbf: Option<usize>,
+    #[serde(default)]
+    pub iat: Option<usize>,
+    #[serde(default)]
+    pub jti: Option<String>,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+}
+
+impl OAuth2JwtAuthenticator {
+    pub fn new(secret: &str, audience: String, issuer: String) -> Self {
+        Self {
+            secret: secret.to_string(),
+            audience,
+            issuer,
+            scheme: a2a_rs::domain::core::agent::SecurityScheme::Http {
+                scheme: "bearer".to_string(),
+                bearer_format: Some("JWT".to_string()),
+                description: Some("OAuth2 JWT Bearer Token".to_string()),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl a2a_rs::port::authenticator::Authenticator for OAuth2JwtAuthenticator {
+    async fn authenticate(
+        &self,
+        context: &a2a_rs::port::authenticator::AuthContext,
+    ) -> Result<a2a_rs::port::authenticator::AuthPrincipal, a2a_rs::domain::A2AError> {
+        self.validate_context(context)?;
+
+        let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+        if !self.audience.is_empty() {
+            validation.set_audience(&[&self.audience]);
+        } else {
+            validation.validate_aud = false;
+        }
+        if !self.issuer.is_empty() {
+            validation.set_issuer(&[&self.issuer]);
+        }
+
+        let decoding_key = jsonwebtoken::DecodingKey::from_secret(self.secret.as_bytes());
+        match jsonwebtoken::decode::<JwtClaims>(&context.credential, &decoding_key, &validation) {
+            Ok(token_data) => {
+                let principal_id = token_data.claims.tenant_id
+                    .or(token_data.claims.sub)
+                    .unwrap_or_else(|| "anonymous".to_string());
+                Ok(a2a_rs::port::authenticator::AuthPrincipal::new(
+                    principal_id,
+                    "bearer".to_string(),
+                ))
+            }
+            Err(e) => Err(a2a_rs::domain::A2AError::Internal(format!(
+                "OAuth2 JWT verification failed: {}",
+                e
+            ))),
+        }
+    }
+
+    fn security_scheme(&self) -> &a2a_rs::domain::core::agent::SecurityScheme {
+        &self.scheme
+    }
+
+    fn validate_context(
+        &self,
+        context: &a2a_rs::port::authenticator::AuthContext,
+    ) -> Result<(), a2a_rs::domain::A2AError> {
+        if context.scheme_type != "bearer" {
+            return Err(a2a_rs::domain::A2AError::Internal(format!(
+                "Invalid authentication scheme: expected 'bearer', got '{}'",
+                context.scheme_type
+            )));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -251,6 +347,12 @@ pub enum AuthConfig {
         #[serde(default = "default_api_key_name")]
         name: String,
     },
+    /// OAuth2 JWT Bearer authentication
+    OAuth2Jwt {
+        secret: String,
+        audience: String,
+        issuer: String,
+    },
 }
 
 impl Default for AuthConfig {
@@ -262,7 +364,14 @@ impl Default for AuthConfig {
 impl AuthConfig {
     /// Create auth config from environment variables
     pub fn from_env() -> Self {
-        // Check for bearer tokens first
+        // Check for JWT secret first
+        if let Ok(secret) = env::var("AUTH_JWT_SECRET") {
+            let audience = env::var("AUTH_JWT_AUDIENCE").unwrap_or_default();
+            let issuer = env::var("AUTH_JWT_ISSUER").unwrap_or_default();
+            return Self::OAuth2Jwt { secret, audience, issuer };
+        }
+
+        // Check for bearer tokens
         if let Ok(tokens_str) = env::var("AUTH_BEARER_TOKENS") {
             let tokens: Vec<String> = tokens_str
                 .split(',')

@@ -73,6 +73,49 @@ impl GatewayBackend for SimpleGatewayBackend {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct GatewayConfigFile {
+    pub server: Option<GatewayServerSection>,
+    pub session: Option<GatewaySessionSection>,
+    pub models: Option<GatewayModelsSection>,
+    pub providers: Option<GatewayProvidersSection>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct GatewayServerSection {
+    pub bind_address: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub log_level: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct GatewaySessionSection {
+    pub max_history_items: Option<usize>,
+    pub session_timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct GatewayModelsSection {
+    pub default_model: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct GatewayProvidersSection {
+    pub groq: Option<GatewayProviderEntry>,
+    pub google: Option<GatewayProviderEntry>,
+    pub openai: Option<GatewayProviderEntry>,
+    pub custom: Option<GatewayProviderEntry>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct GatewayProviderEntry {
+    pub api_url: Option<String>,
+    pub api_key: Option<String>,
+    pub default_model: Option<String>,
+    pub recommended_models: Option<Vec<String>>,
+}
+
 /// Multi-model gateway backend capable of routing to Google Gemini, Groq, OpenAI, or local models
 pub struct MultiModelGatewayBackend {
     pub client: reqwest::Client,
@@ -80,6 +123,10 @@ pub struct MultiModelGatewayBackend {
     pub groq_api_key: Option<String>,
     pub openai_api_key: Option<String>,
     pub custom_endpoint: Option<String>,
+    pub groq_url: String,
+    pub gemini_url: String,
+    pub openai_url: String,
+    pub default_model: Option<String>,
 }
 
 impl Default for MultiModelGatewayBackend {
@@ -109,7 +156,67 @@ impl MultiModelGatewayBackend {
             groq_api_key,
             openai_api_key,
             custom_endpoint,
+            groq_url: "https://api.groq.com/openai/v1/chat/completions".to_string(),
+            gemini_url: "https://generativelanguage.googleapis.com/v1beta/models".to_string(),
+            openai_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            default_model: None,
         }
+    }
+
+    pub fn from_config(config: &GatewayConfigFile) -> Self {
+        let mut backend = Self::from_env();
+
+        if let Some(models) = &config.models {
+            if let Some(dm) = &models.default_model {
+                backend.default_model = Some(dm.clone());
+            }
+        }
+
+        if let Some(providers) = &config.providers {
+            if let Some(groq) = &providers.groq {
+                if let Some(url) = &groq.api_url {
+                    backend.groq_url = url.clone();
+                }
+                if let Some(key) = &groq.api_key {
+                    if !key.is_empty() && !key.starts_with('<') {
+                        backend.groq_api_key = Some(key.clone());
+                    }
+                }
+            }
+            if let Some(google) = &providers.google {
+                if let Some(url) = &google.api_url {
+                    backend.gemini_url = url.clone();
+                }
+                if let Some(key) = &google.api_key {
+                    if !key.is_empty() && !key.starts_with('<') {
+                        backend.gemini_api_key = Some(key.clone());
+                    }
+                }
+            }
+            if let Some(openai) = &providers.openai {
+                if let Some(url) = &openai.api_url {
+                    backend.openai_url = url.clone();
+                }
+                if let Some(key) = &openai.api_key {
+                    if !key.is_empty() && !key.starts_with('<') {
+                        backend.openai_api_key = Some(key.clone());
+                    }
+                }
+            }
+            if let Some(custom) = &providers.custom {
+                if let Some(url) = &custom.api_url {
+                    backend.custom_endpoint = Some(url.clone());
+                }
+            }
+        }
+
+        backend
+    }
+
+    pub fn from_config_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = std::fs::read_to_string(path)?;
+        let config: GatewayConfigFile = toml::from_str(&content)?;
+        Ok(Self::from_config(&config))
     }
 }
 
@@ -121,7 +228,9 @@ impl GatewayBackend for MultiModelGatewayBackend {
         history: &[ResponseItem],
         model: Option<&str>,
     ) -> Result<Vec<ResponseItem>, String> {
-        let model_str = model.unwrap_or("gemini-2.0-flash");
+        let model_str = model
+            .or_else(|| self.default_model.as_deref())
+            .unwrap_or("groq/llama-3.3-70b-versatile");
 
         // 1. Google Gemini routing via GoogleInteractionsAdapter
         if (model_str.contains("gemini") || model_str.starts_with("google")) && self.gemini_api_key.is_some() {
@@ -132,10 +241,8 @@ impl GatewayBackend for MultiModelGatewayBackend {
             ).map_err(|e| format!("Failed to build Gemini interaction request: {}", e))?;
 
             let target_model = model_str.strip_prefix("google/").unwrap_or(model_str);
-            let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                target_model, key
-            );
+            let base_url = self.gemini_url.trim_end_matches('/');
+            let url = format!("{}/{}:generateContent?key={}", base_url, target_model, key);
 
             let res = self.client.post(&url)
                 .json(&gemini_req)
@@ -208,15 +315,20 @@ impl GatewayBackend for MultiModelGatewayBackend {
 
         // 2. Groq / OpenAI / Custom chat completion routing
         let (endpoint, api_key) = if let Some(custom) = &self.custom_endpoint {
-            (custom.clone(), self.openai_api_key.clone().unwrap_or_default())
+            (
+                custom.clone(),
+                self.openai_api_key.clone()
+                    .or_else(|| self.groq_api_key.clone())
+                    .unwrap_or_default(),
+            )
         } else if model_str.starts_with("groq/") || self.groq_api_key.is_some() {
             (
-                "https://api.groq.com/openai/v1/chat/completions".to_string(),
+                self.groq_url.clone(),
                 self.groq_api_key.clone().unwrap_or_default(),
             )
         } else if let Some(key) = &self.openai_api_key {
             (
-                "https://api.openai.com/v1/chat/completions".to_string(),
+                self.openai_url.clone(),
                 key.clone(),
             )
         } else {
