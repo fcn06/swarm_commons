@@ -40,18 +40,16 @@ impl AgentInteraction for A2AAgentInteraction {
         // Get skills from remote agents
         let http_client = reqwest::Client::new();
         let response = http_client
-        .get(format!("{}/skills",uri))
-        .send()
-        .await
-        .expect("Failed to fetch skills");
+            .get(format!("{}/skills", uri))
+            .send()
+            .await?;
 
-        let skills: Vec<AgentSkill> = response.json().await.expect("Failed to parse skills");
-       
+        let skills: Vec<AgentSkill> = response.json().await?;
 
         Ok(A2AAgentInteraction {
             id: id.clone(),
             uri: uri.to_string(),
-            skills: skills,
+            skills,
             client: Arc::new(client),
         })
     }
