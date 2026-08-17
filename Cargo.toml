@@ -70,6 +70,7 @@ schemars = { version = "1.0",  features = ["chrono04"] }
 redb="3.1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+async-stream = "0.3"
 
 [profile.dev]
 opt-level = 0

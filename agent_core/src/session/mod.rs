@@ -27,7 +27,7 @@ impl SessionStore {
         }
     }
 
-    pub async fn get_or_create(&self, session_id: &str) -> Session {
+    pub fn get_or_create(&self, session_id: &str) -> Session {
         self.sessions
             .entry(session_id.to_string())
             .or_insert_with(|| Session {
@@ -46,22 +46,22 @@ impl SessionStore {
     pub async fn resolve_session(&self, previous_response_id: Option<&str>) -> Session {
         if let Some(prev_id) = previous_response_id {
             if let Some(session_id) = self.response_to_session.get(prev_id) {
-                return self.get_or_create(session_id.value()).await;
+                return self.get_or_create(session_id.value());
             }
             if self.sessions.contains_key(prev_id) {
-                return self.get_or_create(prev_id).await;
+                return self.get_or_create(prev_id);
             }
             // Create a new session with id matching or referencing previous_response_id
-            let session = self.get_or_create(prev_id).await;
+            let session = self.get_or_create(prev_id);
             session
         } else {
             let new_session_id = uuid::Uuid::new_v4().to_string();
-            self.get_or_create(&new_session_id).await
+            self.get_or_create(&new_session_id)
         }
     }
 
     pub async fn append_items(&self, session_id: &str, new_items: &[ResponseItem]) -> Vec<ResponseItem> {
-        let session = self.get_or_create(session_id).await;
+        let session = self.get_or_create(session_id);
         let mut items = session.items.write().await;
         for item in new_items {
             let item_id = match item {
@@ -96,6 +96,41 @@ impl SessionStore {
         self.sessions
             .get(session_id)
             .and_then(|session| session.parent_response_id.clone())
+    }
+}
+
+pub mod persistent_store;
+pub use persistent_store::PersistentSessionStore;
+
+#[async_trait::async_trait]
+pub trait SessionStoreApi: Send + Sync {
+    async fn resolve_session(&self, previous_response_id: Option<&str>) -> Session;
+    async fn append_items(&self, session_id: &str, items: &[ResponseItem]) -> Vec<ResponseItem>;
+    async fn get_history(&self, session_id: &str) -> Vec<ResponseItem>;
+    async fn set_parent_response_id(&self, session_id: &str, parent_response_id: String);
+    async fn get_parent_response_id(&self, session_id: &str) -> Option<String>;
+}
+
+#[async_trait::async_trait]
+impl SessionStoreApi for SessionStore {
+    async fn resolve_session(&self, previous_response_id: Option<&str>) -> Session {
+        self.resolve_session(previous_response_id).await
+    }
+
+    async fn append_items(&self, session_id: &str, items: &[ResponseItem]) -> Vec<ResponseItem> {
+        self.append_items(session_id, items).await
+    }
+
+    async fn get_history(&self, session_id: &str) -> Vec<ResponseItem> {
+        self.get_history(session_id).await
+    }
+
+    async fn set_parent_response_id(&self, session_id: &str, parent_response_id: String) {
+        self.set_parent_response_id(session_id, parent_response_id).await;
+    }
+
+    async fn get_parent_response_id(&self, session_id: &str) -> Option<String> {
+        self.get_parent_response_id(session_id).await
     }
 }
 

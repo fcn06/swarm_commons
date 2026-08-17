@@ -32,6 +32,7 @@ dependencies = [
  "a2a-rs",
  "agent_models",
  "anyhow",
+ "async-stream",
  "async-trait",
  "axum",
  "chrono",
@@ -41,6 +42,7 @@ dependencies = [
  "http-body-util",
  "jsonwebtoken",
  "llm_api",
+ "redb",
  "reqwest",
  "serde",
  "serde_json",
@@ -64,6 +66,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -89,6 +92,28 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "async-trait"
@@ -1033,6 +1058,8 @@ version = "0.1.0"
 dependencies = [
  "agent_models",
  "anyhow",
+ "futures",
+ "lazy_static",
  "regex",
  "reqwest",
  "rmcp",
@@ -1397,6 +1424,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
 dependencies = [
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "redb"
+version = "3.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba239c1c1693315d3cc0e601db3b3965543afbf48c41730fdca2f069f510f4a"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

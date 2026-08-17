@@ -18,6 +18,9 @@ rmcp = { workspace = true }
 regex = { workspace = true }
 agent_models = { path = "../agent_models" }
 
+futures = { workspace = true }
+lazy_static = { workspace = true }
+
 # Logging - optional
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true}

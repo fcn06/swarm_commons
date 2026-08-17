@@ -201,10 +201,10 @@ impl<T:Agent> SecureAgentServer<T> {
                     name,
                     keys.len()
                 );
-                println!("⚠️  API key authentication not yet supported, using no authentication");
 
-                // Create server without authentication
-                let server = HttpServer::new(processor, agent_info, bind_address);
+                let authenticator = ApiKeyAuthenticator::new(keys.clone(), location, name);
+                let server =
+                    HttpServer::with_auth(processor, agent_info, bind_address, authenticator);
                 server
                     .start()
                     .await
@@ -222,6 +222,69 @@ impl<T:Agent> SecureAgentServer<T> {
         }
 
 
+    }
+}
+
+/// Dynamic API Key authenticator wrapper for AXUM HTTP server
+#[derive(Clone)]
+pub struct ApiKeyAuthenticator {
+    keys: Vec<String>,
+    scheme: a2a_rs::domain::core::agent::SecurityScheme,
+}
+
+impl ApiKeyAuthenticator {
+    pub fn new(keys: Vec<String>, location: &str, name: &str) -> Self {
+        Self {
+            keys,
+            scheme: a2a_rs::domain::core::agent::SecurityScheme::ApiKey {
+                name: name.to_string(),
+                location: location.to_string(),
+                description: Some("API Key Authentication".to_string()),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl a2a_rs::port::authenticator::Authenticator for ApiKeyAuthenticator {
+    async fn authenticate(
+        &self,
+        context: &a2a_rs::port::authenticator::AuthContext,
+    ) -> Result<a2a_rs::port::authenticator::AuthPrincipal, a2a_rs::domain::A2AError> {
+        self.validate_context(context)?;
+
+        if self.keys.iter().any(|k| k == &context.credential) {
+            let key_suffix = if context.credential.len() >= 4 {
+                &context.credential[context.credential.len() - 4..]
+            } else {
+                &context.credential
+            };
+            Ok(a2a_rs::port::authenticator::AuthPrincipal::new(
+                format!("apikey_principal_...{}", key_suffix),
+                "apikey".to_string(),
+            ))
+        } else {
+            Err(a2a_rs::domain::A2AError::Internal(
+                "API key authentication failed: invalid API key".to_string(),
+            ))
+        }
+    }
+
+    fn security_scheme(&self) -> &a2a_rs::domain::core::agent::SecurityScheme {
+        &self.scheme
+    }
+
+    fn validate_context(
+        &self,
+        context: &a2a_rs::port::authenticator::AuthContext,
+    ) -> Result<(), a2a_rs::domain::A2AError> {
+        if context.scheme_type != "apikey" && context.scheme_type != "bearer" && context.scheme_type != "header" {
+            return Err(a2a_rs::domain::A2AError::Internal(format!(
+                "Invalid authentication scheme for API key: expected 'apikey', 'bearer', or 'header', got '{}'",
+                context.scheme_type
+            )));
+        }
+        Ok(())
     }
 }
 

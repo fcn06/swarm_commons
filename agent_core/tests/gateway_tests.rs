@@ -43,6 +43,10 @@ async fn test_chat_completions_stateless_endpoint() {
     assert_eq!(chat_resp.model, "swarm-fast-v1");
     assert!(!chat_resp.choices.is_empty());
     assert!(chat_resp.choices[0].message.content.as_ref().unwrap().contains("Swarm Gateway Response"));
+    // Verify non-zero real usage tracking
+    assert!(chat_resp.usage.prompt_tokens > 0);
+    assert_eq!(chat_resp.usage.completion_tokens, 10);
+    assert_eq!(chat_resp.usage.total_tokens, chat_resp.usage.prompt_tokens + 10);
 }
 
 #[tokio::test]
@@ -71,6 +75,8 @@ async fn test_responses_stateful_session_chaining() {
     let body_bytes1 = res1.into_body().collect().await.unwrap().to_bytes();
     let resp_obj1: ResponseObject = serde_json::from_slice(&body_bytes1).unwrap();
     assert_eq!(resp_obj1.output.len(), 1);
+    assert!(resp_obj1.usage.is_some());
+    assert!(resp_obj1.usage.as_ref().unwrap().total_tokens > 0);
 
     let turn1_resp_id = match &resp_obj1.output[0] {
         ResponseItem::Message { id, .. } => id.clone(),
@@ -98,6 +104,7 @@ async fn test_responses_stateful_session_chaining() {
     let body_bytes2 = res2.into_body().collect().await.unwrap().to_bytes();
     let resp_obj2: ResponseObject = serde_json::from_slice(&body_bytes2).unwrap();
     assert_eq!(resp_obj2.output.len(), 1);
+    assert!(resp_obj2.usage.is_some());
 
     // Verify session store preserved the full multi-turn history
     let session = session_store.resolve_session(Some(&turn1_resp_id)).await;
@@ -143,4 +150,35 @@ async fn test_responses_sse_streaming() {
 
     assert!(body_str.contains("event: response.item"));
     assert!(body_str.contains("data: [DONE]"));
+}
+
+#[tokio::test]
+async fn test_chat_completions_sse_streaming() {
+    let session_store = Arc::new(SessionStore::new());
+    let server = GatewayServer::with_default_backend(session_store);
+    let app = server.router();
+
+    let stream_req = json!({
+        "model": "swarm-stream-v1",
+        "messages": [
+            {"role": "user", "content": "Stream chat completion"}
+        ],
+        "stream": true
+    });
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&stream_req).unwrap()))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+
+    assert!(body_str.contains("data:"));
+    assert!(body_str.contains("[DONE]"));
 }

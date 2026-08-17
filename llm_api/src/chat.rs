@@ -279,24 +279,79 @@ impl ChatLlmInteraction {
     }
 
 
-    // Helper function to extract text from a Message
-    pub async fn remove_think_tags( &self,result: String) -> anyhow::Result<String> {
-        let mut cleaned_result = result;
+    /// Stream chat completions from the upstream LLM, emitting parsed delta chunks
+    pub async fn call_chat_completions_stream(
+        &self,
+        request_payload: &ChatCompletionRequest,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> Result<Option<Usage>, reqwest::Error> {
+        let mut stream_payload = request_payload.clone();
+        stream_payload.stream = Some(true);
 
-        // Remove ```json ... ``` blocks
-        let re_json = Regex::new(r"```json\s*([\s\S]*?)\s*```").unwrap();
-        cleaned_result = re_json.replace_all(&cleaned_result, "$1").to_string();
+        let response = self.client
+            .post(self.llm_url.clone())
+            .bearer_auth(self.llm_api_key.clone())
+            .header("Content-Type", "application/json; charset=utf-8")
+            .json(&stream_payload)
+            .send()
+            .await?;
 
-        // Remove general ``` ... ``` blocks
-        let re_code = Regex::new(r"```\s*([\s\S]*?)\s*```").unwrap();
-        cleaned_result = re_code.replace_all(&cleaned_result, "$1").to_string();
+        if let Err(e) = response.error_for_status_ref() {
+            let err_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            tracing::error!("LLM streaming API returned HTTP {}: {}", e.status().map(|s| s.as_u16()).unwrap_or(0), err_body);
+            return Err(e);
+        }
 
-        // Remove <think> ... </think> blocks
-        let re_think = Regex::new(r"<think>([\s\S]*?)</think>").unwrap();
-        cleaned_result = re_think.replace_all(&cleaned_result, "").to_string();
+        let mut response = response;
+        let mut buffer = String::new();
+        let mut usage: Option<Usage> = None;
 
-        // Trim any leading/trailing whitespace that might be left after removals
-        Ok(cleaned_result.trim().to_string())
+        while let Some(chunk) = response.chunk().await? {
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&chunk_str);
+
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim().to_string();
+                buffer.drain(..=pos);
+
+                if line.is_empty() || line.starts_with(':') {
+                    continue;
+                }
+
+                if let Some(data) = line.strip_prefix("data:") {
+                    let data = data.trim();
+                    if data == "[DONE]" {
+                        let _ = tx.send("[DONE]".to_string()).await;
+                        break;
+                    }
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(u) = val.get("usage").and_then(|u| if u.is_null() { None } else { Some(u) }) {
+                            if let Ok(parsed_usage) = serde_json::from_value::<Usage>(u.clone()) {
+                                usage = Some(parsed_usage);
+                            }
+                        }
+                    }
+                    let _ = tx.send(data.to_string()).await;
+                }
+            }
+        }
+
+        Ok(usage)
+    }
+
+    // Helper function to extract text from a Message using precompiled regexes
+    pub async fn remove_think_tags(&self, result: String) -> anyhow::Result<String> {
+        lazy_static::lazy_static! {
+            static ref RE_JSON: Regex = Regex::new(r"```json\s*([\s\S]*?)\s*```").unwrap();
+            static ref RE_CODE: Regex = Regex::new(r"```\s*([\s\S]*?)\s*```").unwrap();
+            static ref RE_THINK: Regex = Regex::new(r"<think>([\s\S]*?)</think>").unwrap();
+        }
+
+        let mut cleaned = RE_JSON.replace_all(&result, "$1").to_string();
+        cleaned = RE_CODE.replace_all(&cleaned, "$1").to_string();
+        cleaned = RE_THINK.replace_all(&cleaned, "").to_string();
+
+        Ok(cleaned.trim().to_string())
     }
 
 

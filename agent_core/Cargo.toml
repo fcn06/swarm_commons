@@ -37,6 +37,9 @@ url = { workspace = true }
 chrono={ workspace = true }
 
 
+redb = { workspace = true }
+async-stream = { workspace = true }
+
 toml = { workspace = true }
 
 thiserror = { workspace = true }

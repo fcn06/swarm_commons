@@ -108,7 +108,7 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let gemini_request = match self.interaction_handler.process_request(&session_id, user_query).await {
+        let mut agent_request = match self.interaction_handler.process_request(&session_id, user_query).await {
             Ok(req) => req,
             Err(e) => {
                 tracing::error!("Interaction handler failed: {}", e);
@@ -122,8 +122,9 @@ impl<T: Agent> AsyncMessageHandler for AgentHandler<T> {
                 return Ok(task);
             }
         };
+        agent_request.metadata = message.metadata.clone();
 
-        let execution_result: ExecutionResult = match self.agent.lock().await.handle_request(gemini_request, message.metadata.clone()).await {
+        let execution_result: ExecutionResult = match self.agent.lock().await.handle_request(agent_request).await {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Agent execution failed: {}", e);
