@@ -43,7 +43,10 @@ async-stream = { workspace = true }
 toml = { workspace = true }
 
 thiserror = { workspace = true }
-
-[dev-dependencies]
+clap = { workspace = true }
 tower = { workspace = true }
 http-body-util = { workspace = true }
+
+[[bin]]
+name = "swarm_gateway"
+path = "bin/swarm_gateway.rs"

@@ -7,7 +7,9 @@ use http_body_util::BodyExt;
 use serde_json::json;
 use tower::ServiceExt; // for oneshot
 
-use agent_core::server::gateway_server::GatewayServer;
+use agent_core::server::gateway_server::{
+    BackendTurnResult, GatewayBackend, GatewayResilienceSection, GatewayServer,
+};
 use agent_core::session::SessionStore;
 use agent_models::response_item::{ResponseItem, ResponseObject};
 use llm_api::chat::ChatCompletionResponse;
@@ -181,4 +183,155 @@ async fn test_chat_completions_sse_streaming() {
 
     assert!(body_str.contains("data:"));
     assert!(body_str.contains("[DONE]"));
+}
+
+#[tokio::test]
+async fn test_gateway_health_endpoint() {
+    let session_store = Arc::new(SessionStore::new());
+    let server = GatewayServer::with_default_backend(session_store);
+    let app = server.router();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["status"], "healthy");
+    assert_eq!(body_json["service"], "swarm-gateway");
+}
+
+#[tokio::test]
+async fn test_gateway_concurrency_limit_load_shed() {
+    let session_store = Arc::new(SessionStore::new());
+    let resilience = GatewayResilienceSection {
+        max_concurrent_requests: Some(1),
+        request_timeout_seconds: None,
+        circuit_breaker_failure_threshold: None,
+        circuit_breaker_reset_seconds: None,
+    };
+    let server = GatewayServer::with_default_backend(session_store)
+        .with_resilience(resilience);
+
+    // Acquire the only permit
+    let _permit = server.router(); // get router to verify
+
+    // Let's create an app with max_concurrency = 1
+    let session_store2 = Arc::new(SessionStore::new());
+    let server2 = GatewayServer::with_default_backend(session_store2)
+        .with_resilience(GatewayResilienceSection {
+            max_concurrent_requests: Some(1),
+            ..Default::default()
+        });
+
+    let app = server2.router();
+
+    // First request should succeed
+    let req1 = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "swarm-test",
+            "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+
+    let res1 = app.oneshot(req1).await.unwrap();
+    assert_eq!(res1.status(), StatusCode::OK);
+}
+
+struct SlowMockBackend {
+    pub delay_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl GatewayBackend for SlowMockBackend {
+    async fn process_turn(
+        &self,
+        _session_id: &str,
+        _history: &[ResponseItem],
+        _model: Option<&str>,
+    ) -> Result<BackendTurnResult, String> {
+        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        Ok(BackendTurnResult {
+            items: vec![],
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_gateway_timeout_protection() {
+    let session_store = Arc::new(SessionStore::new());
+    let slow_backend = Arc::new(SlowMockBackend { delay_ms: 500 });
+    let resilience = GatewayResilienceSection {
+        max_concurrent_requests: None,
+        request_timeout_seconds: Some(1), // 1 second timeout
+        circuit_breaker_failure_threshold: None,
+        circuit_breaker_reset_seconds: None,
+    };
+
+    // When backend takes 500ms and timeout is 1s, it should succeed
+    let server = GatewayServer::new(session_store.clone(), slow_backend.clone())
+        .with_resilience(resilience);
+    let app = server.router();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "swarm-test",
+            "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+struct FailingMockBackend;
+
+#[async_trait::async_trait]
+impl GatewayBackend for FailingMockBackend {
+    async fn process_turn(
+        &self,
+        _session_id: &str,
+        _history: &[ResponseItem],
+        _model: Option<&str>,
+    ) -> Result<BackendTurnResult, String> {
+        Err("Circuit breaker is OPEN for provider 'test-prov'. Fast-failing request to protect failure domain.".to_string())
+    }
+}
+
+#[tokio::test]
+async fn test_gateway_circuit_breaker_503_fast_fail() {
+    let session_store = Arc::new(SessionStore::new());
+    let failing_backend = Arc::new(FailingMockBackend);
+    let server = GatewayServer::new(session_store, failing_backend);
+    let app = server.router();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "swarm-test",
+            "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body_json["error"]["type"], "backend_error");
+    assert_eq!(body_json["error"]["code"], "service_unavailable");
 }

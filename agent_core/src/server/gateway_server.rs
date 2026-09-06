@@ -117,6 +117,15 @@ pub struct GatewayConfigFile {
     pub session: Option<GatewaySessionSection>,
     pub models: Option<GatewayModelsSection>,
     pub providers: Option<GatewayProvidersSection>,
+    pub resilience: Option<GatewayResilienceSection>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, Default)]
+pub struct GatewayResilienceSection {
+    pub max_concurrent_requests: Option<usize>,
+    pub request_timeout_seconds: Option<u64>,
+    pub circuit_breaker_failure_threshold: Option<u32>,
+    pub circuit_breaker_reset_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, Default)]
@@ -156,6 +165,51 @@ pub struct GatewayProviderEntry {
     pub recommended_models: Option<Vec<String>>,
 }
 
+/// Circuit breaker for upstream LLM providers to protect gateway failure domains
+#[derive(Debug, Default)]
+pub struct ProviderCircuitBreaker {
+    pub failure_count: std::sync::atomic::AtomicU32,
+    pub last_failure_timestamp: std::sync::atomic::AtomicU64,
+    pub is_open: std::sync::atomic::AtomicBool,
+}
+
+impl ProviderCircuitBreaker {
+    pub fn can_execute(&self, reset_seconds: u64) -> bool {
+        if !self.is_open.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let last = self.last_failure_timestamp.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(last) >= reset_seconds {
+            // Half-open: allow a trial request
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn record_success(&self) {
+        self.failure_count.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.is_open.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn record_failure(&self, threshold: u32) {
+        let count = self.failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.last_failure_timestamp.store(now, std::sync::atomic::Ordering::Relaxed);
+        if count >= threshold {
+            self.is_open.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!("⚠️ Circuit breaker tripped OPEN for provider (failures: {})", count);
+        }
+    }
+}
+
 /// Multi-model gateway backend capable of routing to Google Gemini, Groq, OpenAI, or local models
 pub struct MultiModelGatewayBackend {
     pub client: reqwest::Client,
@@ -171,6 +225,9 @@ pub struct MultiModelGatewayBackend {
     pub google_models: Vec<String>,
     pub openai_models: Vec<String>,
     pub custom_models: Vec<String>,
+    pub circuit_breakers: Arc<dashmap::DashMap<String, Arc<ProviderCircuitBreaker>>>,
+    pub circuit_breaker_threshold: u32,
+    pub circuit_breaker_reset_seconds: u64,
 }
 
 fn get_env_var(key: &str) -> Option<String> {
@@ -261,11 +318,23 @@ impl MultiModelGatewayBackend {
                 "deepseek-r1:8b".to_string(),
                 "qwen2.5:latest".to_string(),
             ],
+            circuit_breakers: Arc::new(dashmap::DashMap::new()),
+            circuit_breaker_threshold: 5,
+            circuit_breaker_reset_seconds: 30,
         }
     }
 
     pub fn from_config(config: &GatewayConfigFile) -> Self {
         let mut backend = Self::from_env();
+
+        if let Some(resilience) = &config.resilience {
+            if let Some(threshold) = resilience.circuit_breaker_failure_threshold {
+                backend.circuit_breaker_threshold = threshold;
+            }
+            if let Some(reset_secs) = resilience.circuit_breaker_reset_seconds {
+                backend.circuit_breaker_reset_seconds = reset_secs;
+            }
+        }
 
         if let Some(models) = &config.models {
             if let Some(dm) = &models.default_model {
@@ -361,16 +430,26 @@ impl GatewayBackend for MultiModelGatewayBackend {
                 let base_url = self.gemini_url.trim_end_matches('/');
                 let url = format!("{}/{}:generateContent?key={}", base_url, target_model, key);
 
-                let res = self.client.post(&url)
-                    .json(&gemini_req)
-                    .send()
-                    .await
-                    .map_err(|e| format!("Gemini API request failed: {}", e))?;
+                let breaker = self.circuit_breakers.entry("google".to_string()).or_default().clone();
+                if !breaker.can_execute(self.circuit_breaker_reset_seconds) {
+                    return Err("Circuit breaker is OPEN for provider 'google'. Fast-failing request to protect failure domain.".to_string());
+                }
+
+                let res = match self.client.post(&url).json(&gemini_req).send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        breaker.record_failure(self.circuit_breaker_threshold);
+                        return Err(format!("Gemini API request failed: {}", e));
+                    }
+                };
 
                 if !res.status().is_success() {
+                    breaker.record_failure(self.circuit_breaker_threshold);
                     let err_text = res.text().await.unwrap_or_default();
                     return Err(format!("Gemini API error: {}", err_text));
                 }
+
+                breaker.record_success();
 
                 #[derive(serde::Deserialize)]
                 #[serde(rename_all = "camelCase")]
@@ -572,8 +651,32 @@ impl GatewayBackend for MultiModelGatewayBackend {
                 tool_choice: None,
             };
 
-            let res = llm.call_chat_completions_v2(&chat_req).await
-                .map_err(|e| format!("Chat completions call failed: {}", e))?;
+            let provider_name = if is_groq {
+                "groq"
+            } else if is_openai {
+                "openai"
+            } else {
+                "custom"
+            };
+
+            let breaker = self.circuit_breakers.entry(provider_name.to_string()).or_default().clone();
+            if !breaker.can_execute(self.circuit_breaker_reset_seconds) {
+                return Err(format!(
+                    "Circuit breaker is OPEN for provider '{}'. Fast-failing request to protect failure domain.",
+                    provider_name
+                ));
+            }
+
+            let res = match llm.call_chat_completions_v2(&chat_req).await {
+                Ok(r) => {
+                    breaker.record_success();
+                    r
+                }
+                Err(e) => {
+                    breaker.record_failure(self.circuit_breaker_threshold);
+                    return Err(format!("Chat completions call failed: {}", e));
+                }
+            };
 
             let usage = Some(BackendUsage {
                 input_tokens: res.usage.prompt_tokens,
@@ -773,6 +876,8 @@ impl GatewayBackend for MultiModelGatewayBackend {
 pub struct GatewayState {
     pub session_store: Arc<dyn SessionStoreApi>,
     pub backend: Arc<dyn GatewayBackend>,
+    pub resilience: Option<GatewayResilienceSection>,
+    pub concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 pub struct GatewayServer {
@@ -785,6 +890,8 @@ impl GatewayServer {
             state: GatewayState {
                 session_store,
                 backend,
+                resilience: None,
+                concurrency_semaphore: None,
             },
         }
     }
@@ -793,11 +900,23 @@ impl GatewayServer {
         Self::new(session_store, Arc::new(SimpleGatewayBackend))
     }
 
+    pub fn with_resilience(mut self, resilience: GatewayResilienceSection) -> Self {
+        let sem = resilience
+            .max_concurrent_requests
+            .filter(|&c| c > 0)
+            .map(|c| Arc::new(tokio::sync::Semaphore::new(c)));
+        self.state.resilience = Some(resilience);
+        self.state.concurrency_semaphore = sem;
+        self
+    }
+
     /// Build the Axum router for the gateway
     pub fn router(&self) -> Router {
         Router::new()
             .route("/v1/responses", post(handle_responses))
             .route("/v1/chat/completions", post(handle_chat_completions))
+            .route("/health", axum::routing::get(handle_health))
+            .route("/v1/health", axum::routing::get(handle_health))
             .with_state(self.state.clone())
     }
 
@@ -810,6 +929,19 @@ impl GatewayServer {
     }
 }
 
+async fn handle_health() -> Response {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "healthy",
+            "service": "swarm-gateway",
+            "mode": "gateway-only",
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+    )
+        .into_response()
+}
+
 // -------------------------------------------------------------------------------------------------
 // Route 1: POST /v1/responses (Open Responses Protocol)
 // -------------------------------------------------------------------------------------------------
@@ -818,6 +950,27 @@ async fn handle_responses(
     State(state): State<GatewayState>,
     Json(payload): Json<CreateResponseRequest>,
 ) -> Response {
+    let _permit = if let Some(sem) = &state.concurrency_semaphore {
+        match sem.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Gateway concurrency limit reached. Load shedding in progress.",
+                            "type": "concurrency_limit_error",
+                            "code": "rate_limit_exceeded"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     let is_stream = payload.stream.unwrap_or(false);
     let session = state
         .session_store
@@ -876,16 +1029,51 @@ async fn handle_responses(
         };
         Sse::new(stream).into_response()
     } else {
-        let turn_result = match state
-            .backend
-            .process_turn(&session.id, &history, payload.model.as_deref())
-            .await
-        {
+        let timeout_duration = state
+            .resilience
+            .as_ref()
+            .and_then(|r| r.request_timeout_seconds)
+            .filter(|&s| s > 0)
+            .map(std::time::Duration::from_secs);
+
+        let turn_result = if let Some(dur) = timeout_duration {
+            match tokio::time::timeout(dur, state.backend.process_turn(&session.id, &history, payload.model.as_deref())).await {
+                Ok(res) => res,
+                Err(_) => {
+                    return (
+                        StatusCode::REQUEST_TIMEOUT,
+                        Json(serde_json::json!({
+                            "error": {
+                                "message": format!("Gateway request timed out after {}s.", dur.as_secs()),
+                                "type": "timeout_error",
+                                "code": "request_timeout"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            state.backend.process_turn(&session.id, &history, payload.model.as_deref()).await
+        };
+
+        let turn_result = match turn_result {
             Ok(res) => res,
             Err(err) => {
+                let status = if err.contains("Circuit breaker is OPEN") {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": err })),
+                    status,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": err,
+                            "type": "backend_error",
+                            "code": if status == StatusCode::SERVICE_UNAVAILABLE { "service_unavailable" } else { "internal_error" }
+                        }
+                    })),
                 )
                     .into_response();
             }
@@ -945,6 +1133,27 @@ async fn handle_chat_completions(
     State(state): State<GatewayState>,
     Json(payload): Json<ChatCompletionRequest>,
 ) -> Response {
+    let _permit = if let Some(sem) = &state.concurrency_semaphore {
+        match sem.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Gateway concurrency limit reached. Load shedding in progress.",
+                            "type": "concurrency_limit_error",
+                            "code": "rate_limit_exceeded"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+
     let session_id = format!("stateless_chat_{}", Uuid::new_v4());
     let is_stream = payload.stream.unwrap_or(false);
 
@@ -1017,16 +1226,51 @@ async fn handle_chat_completions(
         Sse::new(stream).into_response()
     } else {
         // 3. Process with backend
-        let turn_result = match state
-            .backend
-            .process_turn(&session_id, &normalized_items, Some(&payload.model))
-            .await
-        {
+        let timeout_duration = state
+            .resilience
+            .as_ref()
+            .and_then(|r| r.request_timeout_seconds)
+            .filter(|&s| s > 0)
+            .map(std::time::Duration::from_secs);
+
+        let turn_result = if let Some(dur) = timeout_duration {
+            match tokio::time::timeout(dur, state.backend.process_turn(&session_id, &normalized_items, Some(&payload.model))).await {
+                Ok(res) => res,
+                Err(_) => {
+                    return (
+                        StatusCode::REQUEST_TIMEOUT,
+                        Json(serde_json::json!({
+                            "error": {
+                                "message": format!("Gateway request timed out after {}s.", dur.as_secs()),
+                                "type": "timeout_error",
+                                "code": "request_timeout"
+                            }
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            state.backend.process_turn(&session_id, &normalized_items, Some(&payload.model)).await
+        };
+
+        let turn_result = match turn_result {
             Ok(res) => res,
             Err(err) => {
+                let status = if err.contains("Circuit breaker is OPEN") {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": err })),
+                    status,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": err,
+                            "type": "backend_error",
+                            "code": if status == StatusCode::SERVICE_UNAVAILABLE { "service_unavailable" } else { "internal_error" }
+                        }
+                    })),
                 )
                     .into_response();
             }
