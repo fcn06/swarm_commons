@@ -37,5 +37,28 @@ pub struct LogPayload {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConversationContext {
     pub conversation_id: String,
-    pub log_entries:Vec<LogEntry>,
+    pub log_entries: Vec<LogEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FactItem {
+    pub key: String,
+    pub content: String,
+    pub category: Option<String>,
+    pub timestamp: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct MemoryQuery {
+    pub query: String,
+    pub category: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct IdentityContext {
+    pub role: String,
+    pub objectives: Vec<String>,
+    pub constraints: Vec<String>,
+    pub capabilities: Vec<String>,
 }

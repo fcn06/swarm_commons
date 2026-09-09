@@ -42,6 +42,15 @@ pub struct McpRuntimeConfig {
     /// Adds one extra LLM round-trip per tool cycle. Default: false.
     #[serde(default)]
     pub agent_mcp_enable_evaluation: Option<bool>,
+    /// Number of conversation turns to include as context. Default: 10 (when enabled).
+    #[serde(default)]
+    pub agent_mcp_history_length: Option<usize>,
+    /// When true, enables semantic memory fact recall and injection. Default: false.
+    #[serde(default)]
+    pub agent_mcp_enable_memory_recall: Option<bool>,
+    /// When true, enables identity context injection from agent configuration. Default: false.
+    #[serde(default)]
+    pub agent_mcp_enable_identity_context: Option<bool>,
 }
 
 impl McpRuntimeConfig {

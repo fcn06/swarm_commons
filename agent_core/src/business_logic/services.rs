@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use agent_models::evaluation::evaluation_models::{AgentEvaluationLogData,JudgeEvaluation};
 
 //use agent_memory_service::models::Role;
-use agent_models::memory::memory_models::Role;
+use agent_models::memory::memory_models::{Role, LogEntry, FactItem, MemoryQuery};
 
 use std::any::Any;
 
@@ -21,6 +21,18 @@ pub trait EvaluationService: Send + Sync {
 #[async_trait]
 pub trait MemoryService: Send + Sync {
     async fn log(&self, conversation_id: String, role: Role, text: String, agent_name: Option<String>) -> Result<()>;
+
+    async fn get_conversation(&self, _conversation_id: &str, _limit: Option<usize>) -> Result<Vec<LogEntry>> {
+        Ok(vec![])
+    }
+
+    async fn recall_facts(&self, _query: &MemoryQuery) -> Result<Vec<FactItem>> {
+        Ok(vec![])
+    }
+
+    async fn store_fact(&self, _fact: &FactItem) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A trait that defines the interface for a discovery service.
