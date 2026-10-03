@@ -18,17 +18,17 @@ impl RequestContext {
         };
 
         // Extract tenant_id from "tenant_id" or "tenant"
-        if let Some(t) = metadata.get("tenant_id").or_else(|| metadata.get("tenant")) {
-            if let Some(s) = t.as_str() {
-                ctx.tenant_id = Some(s.to_string());
-            }
+        if let Some(t) = metadata.get("tenant_id").or_else(|| metadata.get("tenant"))
+            && let Some(s) = t.as_str()
+        {
+            ctx.tenant_id = Some(s.to_string());
         }
 
         // Extract thread_id from "thread_id" or "conversation_id"
-        if let Some(t) = metadata.get("thread_id").or_else(|| metadata.get("conversation_id")) {
-            if let Some(s) = t.as_str() {
-                ctx.thread_id = Some(s.to_string());
-            }
+        if let Some(t) = metadata.get("thread_id").or_else(|| metadata.get("conversation_id"))
+            && let Some(s) = t.as_str()
+        {
+            ctx.thread_id = Some(s.to_string());
         }
 
         // Extract credential from "agent_jwt", "session_jwt", or "authorization"
@@ -36,18 +36,17 @@ impl RequestContext {
             .get("agent_jwt")
             .or_else(|| metadata.get("session_jwt"))
             .or_else(|| metadata.get("authorization"))
+            && let Some(s) = c.as_str()
         {
-            if let Some(s) = c.as_str() {
-                let s_trimmed = s.trim();
-                let token = if let Some(stripped) = s_trimmed.strip_prefix("Bearer ") {
-                    stripped.trim().to_string()
-                } else if let Some(stripped) = s_trimmed.strip_prefix("bearer ") {
-                    stripped.trim().to_string()
-                } else {
-                    s_trimmed.to_string()
-                };
-                ctx.credential = Some(token);
-            }
+            let s_trimmed = s.trim();
+            let token = if let Some(stripped) = s_trimmed.strip_prefix("Bearer ") {
+                stripped.trim().to_string()
+            } else if let Some(stripped) = s_trimmed.strip_prefix("bearer ") {
+                stripped.trim().to_string()
+            } else {
+                s_trimmed.to_string()
+            };
+            ctx.credential = Some(token);
         }
 
         // Keep all other/extra entries

@@ -46,10 +46,8 @@ impl SessionKeyResolver for TenantThreadResolver {
         let req_ctx = agent_models::RequestContext::from_metadata(metadata);
         if let (Some(tenant), Some(thread)) = (req_ctx.tenant_id, req_ctx.thread_id) {
             Some(format!("{}_{}", tenant, thread))
-        } else if let Some(sid) = a2a_session_id {
-            Some(sid.to_string())
         } else {
-            None
+            a2a_session_id.map(|sid| sid.to_string())
         }
     }
 }
@@ -109,8 +107,7 @@ impl SessionStore {
                 metadata: HashMap::new(),
                 last_accessed: Arc::new(RwLock::new(now)),
             });
-        let session = entry.value().clone();
-        session
+        entry.value().clone()
     }
 
     /// Resolve or create a session id based on an optional previous_response_id.
@@ -153,8 +150,8 @@ impl SessionStore {
 
         // Enforce max_history_items limit if set by trimming oldest items
         if let Some(limit) = self.max_history_items {
-            if items.len() > limit {
-                let excess = items.len() - limit;
+            let excess = items.len().saturating_sub(limit);
+            if excess > 0 {
                 items.drain(0..excess);
             }
         }
@@ -273,7 +270,7 @@ mod tests {
             }],
         };
 
-        let history = store.append_items(session_id, &[item1.clone()]).await;
+        let history = store.append_items(session_id, std::slice::from_ref(&item1)).await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0], item1);
 
@@ -306,10 +303,10 @@ mod tests {
         store.append_items(session_id, &[item1, item2, item3]).await;
         let history = store.get_history(session_id).await;
         assert_eq!(history.len(), 2);
-        if let ResponseItem::Message { content, .. } = &history[0] {
-            if let ContentPart::Text { text } = &content[0] {
-                assert_eq!(text, "2");
-            }
+        if let ResponseItem::Message { content, .. } = &history[0]
+            && let ContentPart::Text { text } = &content[0]
+        {
+            assert_eq!(text, "2");
         }
     }
 

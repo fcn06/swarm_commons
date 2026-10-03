@@ -73,7 +73,7 @@ pub async fn register_with_discovery_service(
 
 /// Helper function to build SimpleAgentInfo from AgentConfig
 pub fn build_agent_info(config: &AgentConfig) -> SimpleAgentInfo {
-    let agent_http_endpoint = format!("{}", config.agent_http_endpoint());
+    let agent_http_endpoint = config.agent_http_endpoint().to_string();
     let mut info = SimpleAgentInfo::new(config.agent_name(), agent_http_endpoint)
         .with_description(config.agent_description())
         .with_streaming()
@@ -95,7 +95,7 @@ pub fn build_agent_info(config: &AgentConfig) -> SimpleAgentInfo {
 
 /// Helper function to build AgentDefinition from AgentConfig
 pub fn build_agent_definition(config: &AgentConfig) -> AgentDefinition {
-    let agent_http_endpoint = format!("{}", config.agent_http_endpoint());
+    let agent_http_endpoint = config.agent_http_endpoint().to_string();
     AgentDefinition {
         id: Uuid::new_v4().to_string(),
         name: config.agent_name(),
@@ -278,7 +278,7 @@ impl<T: Agent> SecureAgentServer<T> {
         &self,
         _shutdown_signal: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let agent_http_endpoint = format!("{}", self.config.agent_http_endpoint());
+        let agent_http_endpoint = self.config.agent_http_endpoint().to_string();
         let bind_address = parse_bind_address(&agent_http_endpoint)?;
 
         let agent_info = build_agent_info(&self.config);

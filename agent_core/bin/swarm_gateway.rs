@@ -49,15 +49,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(content) => match toml::from_str::<GatewayConfigFile>(&content) {
                 Ok(config) => {
                     if let Some(server) = &config.server {
-                        if let Some(addr) = &server.bind_address {
-                            if args.bind_address == "127.0.0.1:8080" {
-                                bind_address = addr.clone();
-                            }
+                        if let Some(addr) = &server.bind_address
+                            && args.bind_address == "127.0.0.1:8080"
+                        {
+                            bind_address = addr.clone();
                         }
-                        if let Some(level) = &server.log_level {
-                            if args.log_level == "info" {
-                                log_level = level.clone();
-                            }
+                        if let Some(level) = &server.log_level
+                            && args.log_level == "info"
+                        {
+                            log_level = level.clone();
                         }
                     }
                     let mut res = config.resilience.clone().unwrap_or_default();
@@ -72,24 +72,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(err) => {
                     eprintln!("⚠️ Failed to parse config file {}: {}. Using env defaults.", config_path, err);
-                    let mut res = GatewayResilienceSection::default();
-                    res.max_concurrent_requests = args.max_concurrency;
-                    res.request_timeout_seconds = args.request_timeout_secs;
+                    let res = GatewayResilienceSection {
+                        max_concurrent_requests: args.max_concurrency,
+                        request_timeout_seconds: args.request_timeout_secs,
+                        ..Default::default()
+                    };
                     (Arc::new(MultiModelGatewayBackend::from_env()), res)
                 }
             },
             Err(err) => {
                 eprintln!("⚠️ Failed to read config file {}: {}. Using env defaults.", config_path, err);
-                let mut res = GatewayResilienceSection::default();
-                res.max_concurrent_requests = args.max_concurrency;
-                res.request_timeout_seconds = args.request_timeout_secs;
+                let res = GatewayResilienceSection {
+                    max_concurrent_requests: args.max_concurrency,
+                    request_timeout_seconds: args.request_timeout_secs,
+                    ..Default::default()
+                };
                 (Arc::new(MultiModelGatewayBackend::from_env()), res)
             }
         }
     } else {
-        let mut res = GatewayResilienceSection::default();
-        res.max_concurrent_requests = args.max_concurrency;
-        res.request_timeout_seconds = args.request_timeout_secs;
+        let res = GatewayResilienceSection {
+            max_concurrent_requests: args.max_concurrency,
+            request_timeout_seconds: args.request_timeout_secs,
+            ..Default::default()
+        };
         (Arc::new(MultiModelGatewayBackend::from_env()), res)
     };
 

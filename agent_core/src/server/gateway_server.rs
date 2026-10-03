@@ -294,12 +294,12 @@ fn get_env_var(key: &str) -> Option<String> {
                 if trimmed.is_empty() || trimmed.starts_with('#') {
                     continue;
                 }
-                if let Some((k, v)) = trimmed.split_once('=') {
-                    if k.trim() == key {
-                        let val = v.trim().trim_matches('"').trim_matches('\'');
-                        if !val.is_empty() && !val.starts_with("your_") && !val.starts_with('<') {
-                            return Some(val.to_string());
-                        }
+                if let Some((k, v)) = trimmed.split_once('=')
+                    && k.trim() == key
+                {
+                    let val = v.trim().trim_matches('"').trim_matches('\'');
+                    if !val.is_empty() && !val.starts_with("your_") && !val.starts_with('<') {
+                        return Some(val.to_string());
                     }
                 }
             }
@@ -399,11 +399,12 @@ impl MultiModelGatewayBackend {
                     if let Some(key) = get_env_var(env_name) {
                         backend.groq_api_key = Some(key);
                     }
-                } else if let Some(key) = &groq.api_key {
-                    if !key.is_empty() && !key.starts_with('<') {
-                        tracing::warn!("Warning: Raw api_key found in TOML for Groq. Prefer 'api_key_env'.");
-                        backend.groq_api_key = Some(key.clone());
-                    }
+                } else if let Some(key) = &groq.api_key
+                    && !key.is_empty()
+                    && !key.starts_with('<')
+                {
+                    tracing::warn!("Warning: Raw api_key found in TOML for Groq. Prefer 'api_key_env'.");
+                    backend.groq_api_key = Some(key.clone());
                 }
                 if let Some(models) = &groq.recommended_models {
                     backend.groq_models = models.clone();
@@ -417,11 +418,12 @@ impl MultiModelGatewayBackend {
                     if let Some(key) = get_env_var(env_name) {
                         backend.gemini_api_key = Some(key);
                     }
-                } else if let Some(key) = &google.api_key {
-                    if !key.is_empty() && !key.starts_with('<') {
-                        tracing::warn!("Warning: Raw api_key found in TOML for Google. Prefer 'api_key_env'.");
-                        backend.gemini_api_key = Some(key.clone());
-                    }
+                } else if let Some(key) = &google.api_key
+                    && !key.is_empty()
+                    && !key.starts_with('<')
+                {
+                    tracing::warn!("Warning: Raw api_key found in TOML for Google. Prefer 'api_key_env'.");
+                    backend.gemini_api_key = Some(key.clone());
                 }
                 if let Some(models) = &google.recommended_models {
                     backend.google_models = models.clone();
@@ -435,11 +437,12 @@ impl MultiModelGatewayBackend {
                     if let Some(key) = get_env_var(env_name) {
                         backend.openai_api_key = Some(key);
                     }
-                } else if let Some(key) = &openai.api_key {
-                    if !key.is_empty() && !key.starts_with('<') {
-                        tracing::warn!("Warning: Raw api_key found in TOML for OpenAI. Prefer 'api_key_env'.");
-                        backend.openai_api_key = Some(key.clone());
-                    }
+                } else if let Some(key) = &openai.api_key
+                    && !key.is_empty()
+                    && !key.starts_with('<')
+                {
+                    tracing::warn!("Warning: Raw api_key found in TOML for OpenAI. Prefer 'api_key_env'.");
+                    backend.openai_api_key = Some(key.clone());
                 }
                 if let Some(models) = &openai.recommended_models {
                     backend.openai_models = models.clone();
@@ -543,31 +546,29 @@ impl MultiModelGatewayBackend {
                     .map_err(|e| format!("Failed to parse Gemini response: {}", e))?;
 
                 let mut output_items = Vec::new();
-                if let Some(candidates) = gemini_data.candidates {
-                    if let Some(first) = candidates.into_iter().next() {
-                        if let Some(content) = first.content {
-                            if let Some(parts) = content.parts {
-                                for part in parts {
-                                    match part {
-                                        GeminiPartResponse::Text { text } => {
-                                            output_items.push(ResponseItem::Message {
-                                                id: format!("resp_msg_{}", Uuid::new_v4()),
-                                                role: Role::Assistant,
-                                                content: vec![ContentPart::Text { text }],
-                                            });
-                                        }
-                                        GeminiPartResponse::FunctionCall { function_call } => {
-                                            let name = function_call.get("name").and_then(|v| v.as_str()).unwrap_or("unknown_tool").to_string();
-                                            let args = function_call.get("args").map(|v| v.to_string()).unwrap_or_default();
-                                            output_items.push(ResponseItem::FunctionCall {
-                                                id: format!("fc_{}", Uuid::new_v4()),
-                                                call_id: format!("call_{}", Uuid::new_v4()),
-                                                name,
-                                                arguments: args,
-                                            });
-                                        }
-                                    }
-                                }
+                if let Some(candidates) = gemini_data.candidates
+                    && let Some(first) = candidates.into_iter().next()
+                    && let Some(content) = first.content
+                    && let Some(parts) = content.parts
+                {
+                    for part in parts {
+                        match part {
+                            GeminiPartResponse::Text { text } => {
+                                output_items.push(ResponseItem::Message {
+                                    id: format!("resp_msg_{}", Uuid::new_v4()),
+                                    role: Role::Assistant,
+                                    content: vec![ContentPart::Text { text }],
+                                });
+                            }
+                            GeminiPartResponse::FunctionCall { function_call } => {
+                                let name = function_call.get("name").and_then(|v| v.as_str()).unwrap_or("unknown_tool").to_string();
+                                let args = function_call.get("args").map(|v| v.to_string()).unwrap_or_default();
+                                output_items.push(ResponseItem::FunctionCall {
+                                    id: format!("fc_{}", Uuid::new_v4()),
+                                    call_id: format!("call_{}", Uuid::new_v4()),
+                                    name,
+                                    arguments: args,
+                                });
                             }
                         }
                     }
@@ -757,14 +758,14 @@ impl MultiModelGatewayBackend {
                         });
                     }
                 }
-                if let Some(content) = choice.message.content {
-                    if !content.is_empty() {
-                        output_items.push(ResponseItem::Message {
-                            id: format!("resp_msg_{}", Uuid::new_v4()),
-                            role: Role::Assistant,
-                            content: vec![ContentPart::Text { text: content }],
-                        });
-                    }
+                if let Some(content) = choice.message.content
+                    && !content.is_empty()
+                {
+                    output_items.push(ResponseItem::Message {
+                        id: format!("resp_msg_{}", Uuid::new_v4()),
+                        role: Role::Assistant,
+                        content: vec![ContentPart::Text { text: content }],
+                    });
                 }
                 if !output_items.is_empty() {
                     return Ok(BackendTurnResult {
@@ -962,7 +963,7 @@ impl GatewayBackend for MultiModelGatewayBackend {
         let primary_model = options
             .model
             .as_deref()
-            .or_else(|| self.default_model.as_deref())
+            .or(self.default_model.as_deref())
             .unwrap_or("groq/llama-3.3-70b-versatile");
 
         let mut last_err = match self
@@ -1041,7 +1042,7 @@ impl GatewayBackend for MultiModelGatewayBackend {
         let primary_model = options
             .model
             .as_deref()
-            .or_else(|| self.default_model.as_deref())
+            .or(self.default_model.as_deref())
             .unwrap_or("groq/llama-3.3-70b-versatile");
 
         self.process_turn_stream_single_model(

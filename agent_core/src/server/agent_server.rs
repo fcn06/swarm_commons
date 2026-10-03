@@ -28,7 +28,7 @@ pub struct AgentServer<T:Agent> {
 
 impl<T:Agent> AgentServer<T> {
     pub async fn new(agent_config: AgentConfig, agent: T, discovery_service: Option<Arc<dyn DiscoveryService>>) -> anyhow::Result<Self> {
-        Ok(Self { config:agent_config,agent:agent,discovery_service:discovery_service })
+        Ok(Self { config: agent_config, agent, discovery_service })
     }
 
     /// Create in-memory storage
@@ -45,7 +45,7 @@ impl<T:Agent> AgentServer<T> {
 
         if let Some(ds) = &self.discovery_service {
             loop {
-                let registration_result = ds.register_agent(&agent_definition).await;
+                let registration_result = ds.register_agent(agent_definition).await;
 
                 match registration_result {
                     Ok(_) => {
@@ -78,8 +78,8 @@ impl<T:Agent> AgentServer<T> {
 
         let message_handler = AgentHandler::<T>::with_storage(self.agent.clone(),storage.clone());
 
-        let agent_http_endpoint= format!("{}", self.config.agent_http_endpoint());
-        let _agent_ws_endpoint= format!("{}", self.config.agent_ws_endpoint());
+        let agent_http_endpoint = self.config.agent_http_endpoint().to_string();
+        let _agent_ws_endpoint = self.config.agent_ws_endpoint().to_string();
 
         // We should remove that part
         let simple_agent_info = SimpleAgentInfo::new(

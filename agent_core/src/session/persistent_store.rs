@@ -27,10 +27,8 @@ impl PersistentSessionStore {
     /// Open or create a redb-backed persistent session store at the given path
     pub fn new(db_path: &str) -> anyhow::Result<Self> {
         // Ensure parent directory exists if specified
-        if let Some(parent) = std::path::Path::new(db_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = std::path::Path::new(db_path).parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
         }
 
         let db = Arc::new(Database::create(db_path)?);

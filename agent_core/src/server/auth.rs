@@ -157,6 +157,7 @@ impl OAuth2JwtAuthenticator {
     }
 
     /// Legacy convenience constructor. Panics if arguments are invalid.
+    #[allow(clippy::expect_used)]
     pub fn new(secret: &str, audience: String, issuer: String) -> Self {
         Self::try_new(secret, audience, issuer)
             .expect("Invalid OAuth2JwtAuthenticator configuration")
@@ -209,10 +210,11 @@ impl Authenticator for OAuth2JwtAuthenticator {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "type")]
 pub enum AuthConfig {
     /// No authentication (development/testing)
+    #[default]
     None,
     /// Bearer token authentication
     BearerToken {
@@ -235,12 +237,6 @@ pub enum AuthConfig {
         audience: String,
         issuer: String,
     },
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl AuthConfig {
