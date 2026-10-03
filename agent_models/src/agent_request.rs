@@ -66,4 +66,9 @@ impl AgentRequest {
             })
             .unwrap_or_default()
     }
+
+    /// Helper to parse typed RequestContext from metadata
+    pub fn context(&self) -> crate::request_context::RequestContext {
+        crate::request_context::RequestContext::from_metadata(self.metadata.as_ref())
+    }
 }

@@ -15,13 +15,16 @@ use axum::{
 use serde::Serialize;
 use uuid::Uuid;
 
+use a2a_rs::port::authenticator::AuthContext;
 use agent_models::response_item::{
     ContentPart, CreateResponseRequest, ResponseItem, ResponseObject, ResponseUsage, ResponsesInput, Role,
 };
 use llm_api::chat::{
     ChatCompletionRequest, ChatCompletionResponse, Choice, ResponseMessage, Usage,
 };
+use llm_api::tools::Tool;
 
+use crate::server::auth::SharedAuthenticator;
 use crate::session::SessionStoreApi;
 
 /// Usage data returned from a backend turn
@@ -39,6 +42,14 @@ pub struct BackendTurnResult {
     pub usage: Option<BackendUsage>,
 }
 
+/// Options passed to a gateway turn processing request, including optional model and tools
+#[derive(Debug, Clone, Default)]
+pub struct GatewayTurnOptions {
+    pub model: Option<String>,
+    pub tools: Option<Vec<Tool>>,
+    pub tool_choice: Option<llm_api::chat::ToolChoice>,
+}
+
 /// Trait for handling the gateway generation backend (e.g. LLM call, agent orchestration loop)
 #[async_trait::async_trait]
 pub trait GatewayBackend: Send + Sync {
@@ -49,7 +60,16 @@ pub trait GatewayBackend: Send + Sync {
         model: Option<&str>,
     ) -> Result<BackendTurnResult, String>;
 
-    /// Stream response chunks. Default implementation calls process_turn and sends items as chunks.
+    async fn process_turn_with_options(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        options: GatewayTurnOptions,
+    ) -> Result<BackendTurnResult, String> {
+        self.process_turn(session_id, history, options.model.as_deref()).await
+    }
+
+    /// Stream response chunks. Default implementation calls process_turn_stream_with_options.
     async fn process_turn_stream(
         &self,
         session_id: &str,
@@ -57,7 +77,28 @@ pub trait GatewayBackend: Send + Sync {
         model: Option<&str>,
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<Option<BackendUsage>, String> {
-        let result = self.process_turn(session_id, history, model).await?;
+        self.process_turn_stream_with_options(
+            session_id,
+            history,
+            GatewayTurnOptions {
+                model: model.map(|s| s.to_string()),
+                tools: None,
+                tool_choice: None,
+            },
+            tx,
+        )
+        .await
+    }
+
+    /// Stream response chunks with options. Default implementation calls process_turn_with_options and sends items as chunks.
+    async fn process_turn_stream_with_options(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        options: GatewayTurnOptions,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> Result<Option<BackendUsage>, String> {
+        let result = self.process_turn_with_options(session_id, history, options).await?;
         for item in &result.items {
             let json_str = serde_json::to_string(item).unwrap_or_default();
             let _ = tx.send(json_str).await;
@@ -147,6 +188,7 @@ pub struct GatewaySessionSection {
 #[derive(Debug, Clone, serde::Deserialize, Default)]
 pub struct GatewayModelsSection {
     pub default_model: Option<String>,
+    pub fallback: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, Default)]
@@ -161,6 +203,7 @@ pub struct GatewayProvidersSection {
 pub struct GatewayProviderEntry {
     pub api_url: Option<String>,
     pub api_key: Option<String>,
+    pub api_key_env: Option<String>,
     pub default_model: Option<String>,
     pub recommended_models: Option<Vec<String>>,
 }
@@ -221,6 +264,7 @@ pub struct MultiModelGatewayBackend {
     pub gemini_url: String,
     pub openai_url: String,
     pub default_model: Option<String>,
+    pub fallback_models: Vec<String>,
     pub groq_models: Vec<String>,
     pub google_models: Vec<String>,
     pub openai_models: Vec<String>,
@@ -293,6 +337,7 @@ impl MultiModelGatewayBackend {
             gemini_url: "https://generativelanguage.googleapis.com/v1beta/models".to_string(),
             openai_url: "https://api.openai.com/v1/chat/completions".to_string(),
             default_model: None,
+            fallback_models: Vec::new(),
             groq_models: vec![
                 "groq/llama-3.3-70b-versatile".to_string(),
                 "openai/gpt-oss-20b".to_string(),
@@ -340,6 +385,9 @@ impl MultiModelGatewayBackend {
             if let Some(dm) = &models.default_model {
                 backend.default_model = Some(dm.clone());
             }
+            if let Some(fb) = &models.fallback {
+                backend.fallback_models = fb.clone();
+            }
         }
 
         if let Some(providers) = &config.providers {
@@ -347,8 +395,13 @@ impl MultiModelGatewayBackend {
                 if let Some(url) = &groq.api_url {
                     backend.groq_url = url.clone();
                 }
-                if let Some(key) = &groq.api_key {
+                if let Some(env_name) = &groq.api_key_env {
+                    if let Some(key) = get_env_var(env_name) {
+                        backend.groq_api_key = Some(key);
+                    }
+                } else if let Some(key) = &groq.api_key {
                     if !key.is_empty() && !key.starts_with('<') {
+                        tracing::warn!("Warning: Raw api_key found in TOML for Groq. Prefer 'api_key_env'.");
                         backend.groq_api_key = Some(key.clone());
                     }
                 }
@@ -360,8 +413,13 @@ impl MultiModelGatewayBackend {
                 if let Some(url) = &google.api_url {
                     backend.gemini_url = url.clone();
                 }
-                if let Some(key) = &google.api_key {
+                if let Some(env_name) = &google.api_key_env {
+                    if let Some(key) = get_env_var(env_name) {
+                        backend.gemini_api_key = Some(key);
+                    }
+                } else if let Some(key) = &google.api_key {
                     if !key.is_empty() && !key.starts_with('<') {
+                        tracing::warn!("Warning: Raw api_key found in TOML for Google. Prefer 'api_key_env'.");
                         backend.gemini_api_key = Some(key.clone());
                     }
                 }
@@ -373,8 +431,13 @@ impl MultiModelGatewayBackend {
                 if let Some(url) = &openai.api_url {
                     backend.openai_url = url.clone();
                 }
-                if let Some(key) = &openai.api_key {
+                if let Some(env_name) = &openai.api_key_env {
+                    if let Some(key) = get_env_var(env_name) {
+                        backend.openai_api_key = Some(key);
+                    }
+                } else if let Some(key) = &openai.api_key {
                     if !key.is_empty() && !key.starts_with('<') {
+                        tracing::warn!("Warning: Raw api_key found in TOML for OpenAI. Prefer 'api_key_env'.");
                         backend.openai_api_key = Some(key.clone());
                     }
                 }
@@ -400,19 +463,15 @@ impl MultiModelGatewayBackend {
         let config: GatewayConfigFile = toml::from_str(&content)?;
         Ok(Self::from_config(&config))
     }
-}
 
-#[async_trait::async_trait]
-impl GatewayBackend for MultiModelGatewayBackend {
-    async fn process_turn(
+    pub async fn process_turn_single_model(
         &self,
         session_id: &str,
         history: &[ResponseItem],
-        model: Option<&str>,
+        model_str: &str,
+        tools: Option<Vec<Tool>>,
+        tool_choice: Option<llm_api::chat::ToolChoice>,
     ) -> Result<BackendTurnResult, String> {
-        let model_str = model
-            .or_else(|| self.default_model.as_deref())
-            .unwrap_or("groq/llama-3.3-70b-versatile");
 
         // 1. Google Gemini routing via GoogleInteractionsAdapter
         let is_gemini = self.google_models.iter().any(|m| m.eq_ignore_ascii_case(model_str))
@@ -547,15 +606,17 @@ impl GatewayBackend for MultiModelGatewayBackend {
             || model_str.starts_with("local/");
 
         let (endpoint, api_key, target_model) = if is_groq && self.groq_api_key.is_some() {
+            let key = self.groq_api_key.as_deref().unwrap_or_default();
             (
                 self.groq_url.clone(),
-                self.groq_api_key.clone().unwrap(),
+                key.to_string(),
                 model_str.strip_prefix("groq/").unwrap_or(model_str).to_string(),
             )
         } else if is_openai && self.openai_api_key.is_some() {
+            let key = self.openai_api_key.as_deref().unwrap_or_default();
             (
                 self.openai_url.clone(),
-                self.openai_api_key.clone().unwrap(),
+                key.to_string(),
                 model_str.strip_prefix("openai/").unwrap_or(model_str).to_string(),
             )
         } else if is_custom {
@@ -647,8 +708,8 @@ impl GatewayBackend for MultiModelGatewayBackend {
                 top_p: None,
                 stop: None,
                 stream: None,
-                tools: None,
-                tool_choice: None,
+                tools,
+                tool_choice,
             };
 
             let provider_name = if is_groq {
@@ -715,19 +776,18 @@ impl GatewayBackend for MultiModelGatewayBackend {
         }
 
         // Default mock fallback
-        SimpleGatewayBackend.process_turn(session_id, history, model).await
+        SimpleGatewayBackend.process_turn(session_id, history, Some(model_str)).await
     }
 
-    async fn process_turn_stream(
+    pub async fn process_turn_stream_single_model(
         &self,
         session_id: &str,
         history: &[ResponseItem],
-        model: Option<&str>,
+        model_str: &str,
+        tools: Option<Vec<Tool>>,
+        tool_choice: Option<llm_api::chat::ToolChoice>,
         tx: tokio::sync::mpsc::Sender<String>,
     ) -> Result<Option<BackendUsage>, String> {
-        let model_str = model
-            .or_else(|| self.default_model.as_deref())
-            .unwrap_or("groq/llama-3.3-70b-versatile");
 
         let is_gemini = self.google_models.iter().any(|m| m.eq_ignore_ascii_case(model_str))
             || model_str.contains("gemini")
@@ -735,7 +795,7 @@ impl GatewayBackend for MultiModelGatewayBackend {
 
         if is_gemini {
             // Fallback for Gemini to generate items and stream as response.item
-            let result = self.process_turn(session_id, history, model).await?;
+            let result = self.process_turn_single_model(session_id, history, model_str, tools, tool_choice).await?;
             for item in &result.items {
                 let json_str = serde_json::to_string(item).unwrap_or_default();
                 let _ = tx.send(json_str).await;
@@ -760,15 +820,17 @@ impl GatewayBackend for MultiModelGatewayBackend {
             || model_str.starts_with("local/");
 
         let (endpoint, api_key, target_model) = if is_groq && self.groq_api_key.is_some() {
+            let key = self.groq_api_key.as_deref().unwrap_or_default();
             (
                 self.groq_url.clone(),
-                self.groq_api_key.clone().unwrap(),
+                key.to_string(),
                 model_str.strip_prefix("groq/").unwrap_or(model_str).to_string(),
             )
         } else if is_openai && self.openai_api_key.is_some() {
+            let key = self.openai_api_key.as_deref().unwrap_or_default();
             (
                 self.openai_url.clone(),
-                self.openai_api_key.clone().unwrap(),
+                key.to_string(),
                 model_str.strip_prefix("openai/").unwrap_or(model_str).to_string(),
             )
         } else if is_custom {
@@ -856,8 +918,8 @@ impl GatewayBackend for MultiModelGatewayBackend {
             top_p: None,
             stop: None,
             stream: Some(true),
-            tools: None,
-            tool_choice: None,
+            tools,
+            tool_choice,
         };
 
         let usage = llm.call_chat_completions_stream(&chat_req, tx).await
@@ -871,6 +933,129 @@ impl GatewayBackend for MultiModelGatewayBackend {
     }
 }
 
+#[async_trait::async_trait]
+impl GatewayBackend for MultiModelGatewayBackend {
+    async fn process_turn(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        model: Option<&str>,
+    ) -> Result<BackendTurnResult, String> {
+        self.process_turn_with_options(
+            session_id,
+            history,
+            GatewayTurnOptions {
+                model: model.map(|s| s.to_string()),
+                tools: None,
+                tool_choice: None,
+            },
+        )
+        .await
+    }
+
+    async fn process_turn_with_options(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        options: GatewayTurnOptions,
+    ) -> Result<BackendTurnResult, String> {
+        let primary_model = options
+            .model
+            .as_deref()
+            .or_else(|| self.default_model.as_deref())
+            .unwrap_or("groq/llama-3.3-70b-versatile");
+
+        let mut last_err = match self
+            .process_turn_single_model(
+                session_id,
+                history,
+                primary_model,
+                options.tools.clone(),
+                options.tool_choice.clone(),
+            )
+            .await
+        {
+            Ok(res) => return Ok(res),
+            Err(e) => {
+                tracing::warn!("Primary model '{}' failed: {}. Checking fallbacks...", primary_model, e);
+                e
+            }
+        };
+
+        for fallback in &self.fallback_models {
+            if fallback == primary_model {
+                continue;
+            }
+            tracing::info!("Attempting fallback model '{}'...", fallback);
+            match self
+                .process_turn_single_model(
+                    session_id,
+                    history,
+                    fallback,
+                    options.tools.clone(),
+                    options.tool_choice.clone(),
+                )
+                .await
+            {
+                Ok(res) => {
+                    tracing::info!("Fallback model '{}' succeeded.", fallback);
+                    return Ok(res);
+                }
+                Err(e) => {
+                    tracing::warn!("Fallback model '{}' failed: {}", fallback, e);
+                    last_err = e;
+                }
+            }
+        }
+
+        Err(last_err)
+    }
+
+    async fn process_turn_stream(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        model: Option<&str>,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> Result<Option<BackendUsage>, String> {
+        self.process_turn_stream_with_options(
+            session_id,
+            history,
+            GatewayTurnOptions {
+                model: model.map(|s| s.to_string()),
+                tools: None,
+                tool_choice: None,
+            },
+            tx,
+        )
+        .await
+    }
+
+    async fn process_turn_stream_with_options(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        options: GatewayTurnOptions,
+        tx: tokio::sync::mpsc::Sender<String>,
+    ) -> Result<Option<BackendUsage>, String> {
+        let primary_model = options
+            .model
+            .as_deref()
+            .or_else(|| self.default_model.as_deref())
+            .unwrap_or("groq/llama-3.3-70b-versatile");
+
+        self.process_turn_stream_single_model(
+            session_id,
+            history,
+            primary_model,
+            options.tools,
+            options.tool_choice,
+            tx,
+        )
+        .await
+    }
+}
+
 /// Shared Gateway State
 #[derive(Clone)]
 pub struct GatewayState {
@@ -878,6 +1063,7 @@ pub struct GatewayState {
     pub backend: Arc<dyn GatewayBackend>,
     pub resilience: Option<GatewayResilienceSection>,
     pub concurrency_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    pub authenticator: Option<SharedAuthenticator>,
 }
 
 pub struct GatewayServer {
@@ -892,6 +1078,7 @@ impl GatewayServer {
                 backend,
                 resilience: None,
                 concurrency_semaphore: None,
+                authenticator: None,
             },
         }
     }
@@ -910,13 +1097,33 @@ impl GatewayServer {
         self
     }
 
+    pub fn with_authenticator(mut self, authenticator: SharedAuthenticator) -> Self {
+        self.state.authenticator = Some(authenticator);
+        self
+    }
+
+    pub fn maybe_authenticator(mut self, authenticator: Option<SharedAuthenticator>) -> Self {
+        self.state.authenticator = authenticator;
+        self
+    }
+
     /// Build the Axum router for the gateway
     pub fn router(&self) -> Router {
-        Router::new()
+        let protected_routes = Router::new()
             .route("/v1/responses", post(handle_responses))
             .route("/v1/chat/completions", post(handle_chat_completions))
+            .layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                auth_middleware,
+            ));
+
+        let public_routes = Router::new()
             .route("/health", axum::routing::get(handle_health))
-            .route("/v1/health", axum::routing::get(handle_health))
+            .route("/v1/health", axum::routing::get(handle_health));
+
+        Router::new()
+            .merge(protected_routes)
+            .merge(public_routes)
             .with_state(self.state.clone())
     }
 
@@ -940,6 +1147,76 @@ async fn handle_health() -> Response {
         })),
     )
         .into_response()
+}
+
+fn map_backend_error_to_status(err: &str) -> (StatusCode, &'static str) {
+    if err.contains("Circuit breaker is OPEN") {
+        (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
+    } else if err.contains("429") || err.to_lowercase().contains("rate limit") {
+        (StatusCode::TOO_MANY_REQUESTS, "rate_limit_exceeded")
+    } else if err.contains("503") || err.to_lowercase().contains("service unavailable") {
+        (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
+    } else if err.contains("502") || err.to_lowercase().contains("bad gateway") {
+        (StatusCode::BAD_GATEWAY, "bad_gateway")
+    } else if err.contains("504") || err.to_lowercase().contains("timeout") {
+        (StatusCode::GATEWAY_TIMEOUT, "gateway_timeout")
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    }
+}
+
+async fn auth_middleware(
+    State(state): State<GatewayState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Some(auth) = &state.authenticator {
+        let auth_header = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+
+        let (scheme, cred) = match auth_header {
+            Some(header_val) => {
+                let parts: Vec<&str> = header_val.splitn(2, ' ').collect();
+                if parts.len() == 2 {
+                    (parts[0].to_string(), parts[1].to_string())
+                } else {
+                    ("Bearer".to_string(), header_val.to_string())
+                }
+            }
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Missing Authorization header",
+                            "type": "authentication_error",
+                            "code": "unauthorized"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        let auth_ctx = AuthContext::new(scheme, cred);
+        if let Err(e) = auth.0.authenticate(&auth_ctx).await {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("Authentication failed: {}", e),
+                        "type": "authentication_error",
+                        "code": "invalid_credentials"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    next.run(req).await
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -1060,18 +1337,14 @@ async fn handle_responses(
         let turn_result = match turn_result {
             Ok(res) => res,
             Err(err) => {
-                let status = if err.contains("Circuit breaker is OPEN") {
-                    StatusCode::SERVICE_UNAVAILABLE
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
+                let (status, code) = map_backend_error_to_status(&err);
                 return (
                     status,
                     Json(serde_json::json!({
                         "error": {
                             "message": err,
                             "type": "backend_error",
-                            "code": if status == StatusCode::SERVICE_UNAVAILABLE { "service_unavailable" } else { "internal_error" }
+                            "code": code
                         }
                     })),
                 )
@@ -1192,24 +1465,24 @@ async fn handle_chat_completions(
         }
     }
 
-    // 2. Append to session store
-    state
-        .session_store
-        .append_items(&session_id, &normalized_items)
-        .await;
+    // Stateless path (F5): Do NOT touch session store. Pass normalized_items straight to backend.
 
     if is_stream {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
         let backend = state.backend.clone();
         let session_id_clone = session_id.clone();
         let history_clone = normalized_items.clone();
-        let model_clone = payload.model.clone();
+        let turn_options = GatewayTurnOptions {
+            model: Some(payload.model.clone()),
+            tools: payload.tools,
+            tool_choice: payload.tool_choice,
+        };
 
         tokio::spawn(async move {
-            let _ = backend.process_turn_stream(
+            let _ = backend.process_turn_stream_with_options(
                 &session_id_clone,
                 &history_clone,
-                Some(&model_clone),
+                turn_options,
                 tx,
             ).await;
         });
@@ -1233,8 +1506,14 @@ async fn handle_chat_completions(
             .filter(|&s| s > 0)
             .map(std::time::Duration::from_secs);
 
+        let turn_options = GatewayTurnOptions {
+            model: Some(payload.model.clone()),
+            tools: payload.tools,
+            tool_choice: payload.tool_choice,
+        };
+
         let turn_result = if let Some(dur) = timeout_duration {
-            match tokio::time::timeout(dur, state.backend.process_turn(&session_id, &normalized_items, Some(&payload.model))).await {
+            match tokio::time::timeout(dur, state.backend.process_turn_with_options(&session_id, &normalized_items, turn_options)).await {
                 Ok(res) => res,
                 Err(_) => {
                     return (
@@ -1251,24 +1530,20 @@ async fn handle_chat_completions(
                 }
             }
         } else {
-            state.backend.process_turn(&session_id, &normalized_items, Some(&payload.model)).await
+            state.backend.process_turn_with_options(&session_id, &normalized_items, turn_options).await
         };
 
         let turn_result = match turn_result {
             Ok(res) => res,
             Err(err) => {
-                let status = if err.contains("Circuit breaker is OPEN") {
-                    StatusCode::SERVICE_UNAVAILABLE
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                };
+                let (status, code) = map_backend_error_to_status(&err);
                 return (
                     status,
                     Json(serde_json::json!({
                         "error": {
                             "message": err,
                             "type": "backend_error",
-                            "code": if status == StatusCode::SERVICE_UNAVAILABLE { "service_unavailable" } else { "internal_error" }
+                            "code": code
                         }
                     })),
                 )

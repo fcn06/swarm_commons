@@ -20,8 +20,8 @@ struct Args {
     #[clap(long, short = 'c')]
     config_file: Option<String>,
 
-    /// Bind address (e.g. 0.0.0.0:8080)
-    #[clap(long, default_value = "0.0.0.0:8080")]
+    /// Bind address (e.g. 127.0.0.1:8080)
+    #[clap(long, default_value = "127.0.0.1:8080")]
     bind_address: String,
 
     /// Log level (trace, debug, info, warn, error)
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(config) => {
                     if let Some(server) = &config.server {
                         if let Some(addr) = &server.bind_address {
-                            if args.bind_address == "0.0.0.0:8080" {
+                            if args.bind_address == "127.0.0.1:8080" {
                                 bind_address = addr.clone();
                             }
                         }

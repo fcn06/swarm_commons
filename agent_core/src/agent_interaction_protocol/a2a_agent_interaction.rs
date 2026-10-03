@@ -103,15 +103,17 @@ impl AgentInteraction for A2AAgentInteraction {
         let response = task
             .status
             .message
-            .unwrap()
-            .parts
-            .iter()
-            .filter_map(|part| match part {
-                Part::Text { text, .. } => Some(text.clone()),
-                _ => None,
+            .map(|m| {
+                m.parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        Part::Text { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .unwrap_or_default();
 
         debug!("Received response: {:?}", response);
 

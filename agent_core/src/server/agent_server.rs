@@ -89,25 +89,8 @@ impl<T:Agent> AgentServer<T> {
 
         let processor = DefaultRequestProcessor::with_handler(message_handler, simple_agent_info);
 
-        
-        let agent_info = SimpleAgentInfo::new(
-            self.config.agent_name(),
-            agent_http_endpoint.clone(),
-        )
-        .with_description(self.config.agent_description())
-        .with_documentation_url(self.config.agent_doc_url().expect("NO DOC URL PROVIDED IN CONFIG"))
-        .with_streaming()
-        .add_comprehensive_skill(
-            self.config.agent_skill_id(),
-            self.config.agent_skill_name(),
-            Some(self.config.agent_skill_description()),
-            Some(self.config.agent_tags()),
-            Some(self.config.agent_examples()),
-            Some(vec!["text".to_string(), "data".to_string()]),
-            Some(vec!["text".to_string(), "data".to_string()]),
-        );
+        let agent_info = crate::server::secure_agent_server::build_agent_info(&self.config);
 
-        
         let agent_definition=AgentDefinition{
             id:Uuid::new_v4().to_string(),
             name:self.config.agent_name(),
@@ -126,8 +109,7 @@ impl<T:Agent> AgentServer<T> {
             self.register_with_discovery_service(&agent_definition).await?;
         }
 
-        // bind address is on format  0.0.0.0:0000
-        let bind_address = agent_http_endpoint.clone().replace("http://","");
+        let bind_address = crate::server::secure_agent_server::parse_bind_address(&agent_http_endpoint)?;
 
         println!(
             "🌐 Starting HTTP a2a agent server {} on {}",

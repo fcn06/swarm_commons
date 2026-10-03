@@ -1,4 +1,4 @@
-use crate::session::SessionStore;
+use crate::session::SessionStoreApi;
 use anyhow::Result;
 use agent_models::agent_request::AgentRequest;
 use agent_models::response_item::{ContentPart, ResponseItem, Role};
@@ -6,17 +6,17 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct InteractionHandler {
-    session_store: Arc<SessionStore>,
+    session_store: Arc<dyn SessionStoreApi>,
 }
 
 impl InteractionHandler {
-    pub fn new(session_store: Arc<SessionStore>) -> Self {
+    pub fn new(session_store: Arc<dyn SessionStoreApi>) -> Self {
         Self { session_store }
     }
 
     pub async fn process_request(
         &self,
-        session_id: &str,
+        session_id: Option<&str>,
         user_message: String,
     ) -> Result<AgentRequest> {
         // 1. Create a new ResponseItem for the user's message
@@ -26,37 +26,46 @@ impl InteractionHandler {
             content: vec![ContentPart::Text { text: user_message }],
         };
 
-        // 2. Append the new item to the session history
-        self.session_store.append_items(session_id, &[user_item]).await;
-
-        // 3. Get the full, updated history
-        let history = self.session_store.get_history(session_id).await;
-
-        // 4. Return provider-agnostic AgentRequest
-        Ok(AgentRequest {
-            items: history,
-            session_id: Some(session_id.to_string()),
-            metadata: None,
-        })
+        match session_id {
+            Some(sid) => {
+                // Persistent / stateful turn
+                self.session_store.append_items(sid, &[user_item]).await;
+                let history = self.session_store.get_history(sid).await;
+                Ok(AgentRequest {
+                    items: history,
+                    session_id: Some(sid.to_string()),
+                    metadata: None,
+                })
+            }
+            None => {
+                // Ephemeral turn: no session persistence
+                Ok(AgentRequest {
+                    items: vec![user_item],
+                    session_id: None,
+                    metadata: None,
+                })
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionStore;
     use tokio::runtime::Runtime;
 
     #[test]
     fn test_process_request_conversion() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
-            let session_store = Arc::new(SessionStore::new());
+            let session_store: Arc<dyn SessionStoreApi> = Arc::new(SessionStore::new());
             let handler = InteractionHandler::new(session_store.clone());
             let session_id = "test_session_interactions";
 
             // First interaction
             let request1 = handler
-                .process_request(session_id, "Hello, Agent!".to_string())
+                .process_request(Some(session_id), "Hello, Agent!".to_string())
                 .await
                 .unwrap();
 
@@ -73,12 +82,20 @@ mod tests {
 
             // Second interaction
             let request2 = handler
-                .process_request(session_id, "How are you?".to_string())
+                .process_request(Some(session_id), "How are you?".to_string())
                 .await
                 .unwrap();
 
             assert_eq!(request2.items.len(), 3);
             assert_eq!(request2.user_query(), "How are you?");
+
+            // Ephemeral interaction
+            let ephemeral_req = handler
+                .process_request(None, "Ephemeral message".to_string())
+                .await
+                .unwrap();
+            assert_eq!(ephemeral_req.items.len(), 1);
+            assert_eq!(ephemeral_req.session_id, None);
         });
     }
 }

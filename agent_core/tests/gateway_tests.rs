@@ -7,6 +7,10 @@ use http_body_util::BodyExt;
 use serde_json::json;
 use tower::ServiceExt; // for oneshot
 
+use a2a_rs::domain::core::agent::SecurityScheme;
+use a2a_rs::domain::A2AError;
+use a2a_rs::port::authenticator::{AuthContext, AuthPrincipal, Authenticator};
+use agent_core::server::auth::SharedAuthenticator;
 use agent_core::server::gateway_server::{
     BackendTurnResult, GatewayBackend, GatewayResilienceSection, GatewayServer,
 };
@@ -334,4 +338,260 @@ async fn test_gateway_circuit_breaker_503_fast_fail() {
     let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(body_json["error"]["type"], "backend_error");
     assert_eq!(body_json["error"]["code"], "service_unavailable");
+}
+
+struct GatewayTestAuthenticator {
+    scheme: SecurityScheme,
+}
+
+impl GatewayTestAuthenticator {
+    fn new() -> Self {
+        Self {
+            scheme: SecurityScheme::Http {
+                scheme: "bearer".to_string(),
+                bearer_format: Some("token".to_string()),
+                description: None,
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Authenticator for GatewayTestAuthenticator {
+    async fn authenticate(&self, context: &AuthContext) -> Result<AuthPrincipal, A2AError> {
+        if context.credential == "valid_gateway_token" {
+            Ok(AuthPrincipal::new("gateway_client".to_string(), "bearer".to_string()))
+        } else {
+            Err(A2AError::Internal("Bad gateway token".to_string()))
+        }
+    }
+
+    fn security_scheme(&self) -> &SecurityScheme {
+        &self.scheme
+    }
+
+    fn validate_context(&self, _context: &AuthContext) -> Result<(), A2AError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_gateway_inbound_auth_enforced() {
+    let session_store = Arc::new(SessionStore::new());
+    let server = GatewayServer::with_default_backend(session_store)
+        .with_authenticator(SharedAuthenticator::new(GatewayTestAuthenticator::new()));
+    let app = server.router();
+
+    // 1. Health check is public without auth
+    let health_req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let health_res = app.clone().oneshot(health_req).await.unwrap();
+    assert_eq!(health_res.status(), StatusCode::OK);
+
+    // 2. Chat completions without header returns 401
+    let unauth_req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "swarm-test",
+            "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+    let unauth_res = app.clone().oneshot(unauth_req).await.unwrap();
+    assert_eq!(unauth_res.status(), StatusCode::UNAUTHORIZED);
+
+    // 3. Chat completions with invalid token returns 401
+    let bad_req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer invalid_secret")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "swarm-test",
+            "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+    let bad_res = app.clone().oneshot(bad_req).await.unwrap();
+    assert_eq!(bad_res.status(), StatusCode::UNAUTHORIZED);
+
+    // 4. Chat completions with valid token succeeds (200 OK)
+    let good_req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer valid_gateway_token")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "swarm-test",
+            "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+    let good_res = app.oneshot(good_req).await.unwrap();
+    assert_eq!(good_res.status(), StatusCode::OK);
+}
+
+// Mock backend testing tool forwarding
+struct ToolInspectBackend {
+    pub received_tools: Arc<tokio::sync::Mutex<Option<Vec<llm_api::tools::Tool>>>>,
+}
+
+#[async_trait::async_trait]
+impl GatewayBackend for ToolInspectBackend {
+    async fn process_turn(
+        &self,
+        session_id: &str,
+        history: &[ResponseItem],
+        model: Option<&str>,
+    ) -> Result<BackendTurnResult, String> {
+        self.process_turn_with_options(
+            session_id,
+            history,
+            agent_core::server::gateway_server::GatewayTurnOptions {
+                model: model.map(|s| s.to_string()),
+                tools: None,
+                tool_choice: None,
+            },
+        ).await
+    }
+
+    async fn process_turn_with_options(
+        &self,
+        _session_id: &str,
+        _history: &[ResponseItem],
+        options: agent_core::server::gateway_server::GatewayTurnOptions,
+    ) -> Result<BackendTurnResult, String> {
+        let mut lock = self.received_tools.lock().await;
+        *lock = options.tools;
+
+        Ok(BackendTurnResult {
+            items: vec![ResponseItem::FunctionCall {
+                id: "fc_1".to_string(),
+                call_id: "call_abc123".to_string(),
+                name: "lookup_inventory".to_string(),
+                arguments: r#"{"item_id":"widget"}"#.to_string(),
+            }],
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_gateway_tool_forwarding_options() {
+    let session_store = Arc::new(SessionStore::new());
+    let received_tools = Arc::new(tokio::sync::Mutex::new(None));
+    let backend = Arc::new(ToolInspectBackend {
+        received_tools: received_tools.clone(),
+    });
+    let server = GatewayServer::new(session_store, backend);
+    let app = server.router();
+
+    let req_body = json!({
+        "model": "tool-model",
+        "messages": [{"role": "user", "content": "Check stock"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_inventory",
+                    "description": "Check inventory for an item",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "item_id": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        ]
+    });
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&req_body).unwrap()))
+        .unwrap();
+
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let lock = received_tools.lock().await;
+    assert!(lock.is_some());
+    assert_eq!(lock.as_ref().unwrap().len(), 1);
+    assert_eq!(lock.as_ref().unwrap()[0].function.name, "lookup_inventory");
+
+    let body_bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let chat_resp: ChatCompletionResponse = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(chat_resp.choices.len(), 1);
+    let tool_calls = chat_resp.choices[0].message.tool_calls.as_ref().unwrap();
+    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(tool_calls[0].function.name, "lookup_inventory");
+}
+
+#[tokio::test]
+async fn test_gateway_error_status_mapping() {
+    struct CustomErrBackend {
+        err_msg: String,
+    }
+    #[async_trait::async_trait]
+    impl GatewayBackend for CustomErrBackend {
+        async fn process_turn(
+            &self,
+            _s: &str,
+            _h: &[ResponseItem],
+            _m: Option<&str>,
+        ) -> Result<BackendTurnResult, String> {
+            Err(self.err_msg.clone())
+        }
+    }
+
+    let session_store = Arc::new(SessionStore::new());
+
+    // 429 rate limit
+    let server429 = GatewayServer::new(session_store.clone(), Arc::new(CustomErrBackend {
+        err_msg: "HTTP 429: Rate limit exceeded".to_string(),
+    }));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+    let res = server429.router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // 502 bad gateway
+    let server502 = GatewayServer::new(session_store.clone(), Arc::new(CustomErrBackend {
+        err_msg: "Bad gateway upstream returned 502".to_string(),
+    }));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+    let res = server502.router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+
+    // 504 gateway timeout
+    let server504 = GatewayServer::new(session_store, Arc::new(CustomErrBackend {
+        err_msg: "Upstream timeout after 30s".to_string(),
+    }));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "model": "m", "messages": [{"role": "user", "content": "hi"}]
+        })).unwrap()))
+        .unwrap();
+    let res = server504.router().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::GATEWAY_TIMEOUT);
 }
